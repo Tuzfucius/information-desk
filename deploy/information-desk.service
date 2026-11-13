@@ -1,0 +1,8 @@
+[Unit]
+Description=Information Desk scheduled source synchronization
+
+[Service]
+Type=oneshot
+Environment=INFO_DESK_HOME=%h/.information-desk
+UMask=0077
+ExecStart=%h/.local/bin/info-desk sync

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Information Desk every six hours
+
+[Timer]
+OnCalendar=*-*-* 00/6:00:00
+Persistent=true
+Unit=information-desk.service
+
+[Install]
+WantedBy=timers.target

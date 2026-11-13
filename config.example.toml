@@ -1,0 +1,20 @@
+[data]
+home = "~/.information-desk"
+database = "intel.db"
+
+[sync]
+feeds = ["arxiv", "hf_papers", "hf_models", "github"]
+topics = ["LLM", "Agent", "VLM", "VLA", "Diffusion Policy"]
+refresh_budget_sec = 30
+scheduled_budget_sec = 900
+overlap_hours = 48
+initial_lookback_days = 2
+max_pages_per_window = 20
+watch_refresh_interval_hours = 24
+watch_refresh_limit_per_run = 100
+
+[http]
+connect_timeout_sec = 5
+read_timeout_sec = 20
+max_response_bytes = 4000000
+max_retries = 3
