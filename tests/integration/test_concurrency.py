@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import pytest
 
 from info_desk.contracts import FetchRequest
 from info_desk.exceptions import InfoDeskError
-from info_desk.locking import LockOperationError
+from info_desk.locking import LockConflictError, LockOperationError
 from info_desk.resolver import IdentityResolver
 from info_desk.sources.base import PageResult
 from info_desk.sync_engine import SyncEngine
@@ -34,7 +36,11 @@ async def test_manual_and_scheduled_sync_share_lock_and_release_after_run(settin
 
 
 async def test_scheduled_watch_run_holds_all_registered_feed_locks(settings, repository) -> None:
-    adapters = {"arxiv": EmptyAdapter(), "github": EmptyAdapter()}
+    adapters = {
+        "arxiv": EmptyAdapter(),
+        "github": EmptyAdapter(),
+        "hf_models": EmptyAdapter(),
+    }
     resolver = IdentityResolver(repository)
     refresher = WatchRefresher(settings, repository, adapters, resolver)
     sync = SyncEngine(settings, repository, adapters, resolver, refresher, lambda _r: None)
@@ -108,3 +114,87 @@ async def test_next_sync_recovers_interrupted_run_without_losing_waterline(setti
 
     await sync.run(FetchRequest(feeds=["arxiv"], topics=["VLA"]), scheduled=True)
     assert repository.get_sync_state(job_key)["last_status"] == "success"
+
+
+async def test_successful_sync_reports_release_failure_without_rewriting_committed_state(
+    settings, repository, monkeypatch
+) -> None:
+    sync = _engine(settings, repository)
+
+    @contextmanager
+    def broken_release(_feed):
+        yield
+        raise LockOperationError("release backend failed")
+
+    monkeypatch.setattr(sync, "_feed_lock", broken_release)
+    with pytest.raises(InfoDeskError) as raised:
+        await sync.run(FetchRequest(feeds=["arxiv"], topics=["VLA"]))
+    assert raised.value.code == "SYNC_LOCK_RELEASE_FAILED"
+    runs = repository.list_runs(limit=10)
+    assert runs[0]["status"] == "success"
+
+
+async def test_business_error_survives_release_error_and_logs_secondary_failure(
+    settings, repository, monkeypatch, caplog
+) -> None:
+    sync = _engine(settings, repository)
+
+    @contextmanager
+    def broken_release(_feed):
+        yield
+        raise LockOperationError("release backend failed")
+
+    def fail_recovery(*_args, **_kwargs):
+        raise RuntimeError("primary sync failure")
+
+    monkeypatch.setattr(sync, "_feed_lock", broken_release)
+    monkeypatch.setattr(repository, "recover_stale_runs", fail_recovery)
+    with pytest.raises(RuntimeError, match="primary sync failure"):
+        await sync.run(FetchRequest(feeds=["arxiv"], topics=["VLA"]))
+    assert "Failed to release synchronization locks after primary failure" in caplog.text
+
+
+async def test_partial_acquisition_conflict_survives_release_errors_and_attempts_all_cleanup(
+    settings, repository, monkeypatch, caplog
+) -> None:
+    adapters = {
+        "arxiv": EmptyAdapter(),
+        "github": EmptyAdapter(),
+        "hf_models": EmptyAdapter(),
+    }
+    resolver = IdentityResolver(repository)
+    watch = WatchRefresher(settings, repository, adapters, resolver)
+    sync = SyncEngine(settings, repository, adapters, resolver, watch, lambda _r: None)
+    released = []
+
+    @contextmanager
+    def first(_feed):
+        try:
+            yield
+        finally:
+            released.append("arxiv")
+            raise LockOperationError("cleanup failed")
+
+    @contextmanager
+    def second(_feed):
+        try:
+            yield
+        finally:
+            released.append("github")
+            raise LockOperationError("second cleanup failed")
+
+    @contextmanager
+    def third(_feed):
+        raise LockConflictError("held")
+        yield
+
+    monkeypatch.setattr(
+        sync,
+        "_feed_lock",
+        lambda feed: first(feed) if feed == "arxiv" else second(feed) if feed == "github" else third(feed),
+    )
+    with pytest.raises(InfoDeskError) as raised:
+        await sync.run(FetchRequest(feeds=["arxiv"], topics=["VLA"]), scheduled=True)
+    assert raised.value.code == "SYNC_ALREADY_RUNNING"
+    assert set(released) == {"arxiv", "github"}
+    assert "Failed to release partially acquired synchronization locks" in caplog.text

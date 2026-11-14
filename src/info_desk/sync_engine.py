@@ -27,6 +27,41 @@ ARXIV_CATEGORIES = ["cs.AI", "cs.CL", "cs.LG", "cs.CV", "cs.RO"]
 logger = logging.getLogger(__name__)
 
 
+def _lock_error(error: BaseException, *, phase: str) -> InfoDeskError | None:
+    if phase == "release":
+        return InfoDeskError(
+            "SYNC_LOCK_RELEASE_FAILED",
+            "Synchronization work completed, but a feed lock could not be released.",
+            retryable=True,
+            details={"error_type": type(error.__cause__ or error).__name__},
+        )
+    if isinstance(error, LockConflictError):
+        return InfoDeskError(
+            "SYNC_ALREADY_RUNNING",
+            "A synchronization for one of the selected feeds is already running.",
+            retryable=True,
+        )
+    if isinstance(error, PermissionError):
+        return InfoDeskError(
+            "SYNC_LOCK_PERMISSION",
+            "Permission denied while opening a synchronization lock.",
+            details={"error_type": type(error).__name__},
+        )
+    if isinstance(error, OSError):
+        return InfoDeskError(
+            "SYNC_LOCK_IO",
+            "Filesystem error while opening a synchronization lock.",
+            details={"error_type": type(error).__name__},
+        )
+    if isinstance(error, LockOperationError):
+        return InfoDeskError(
+            "SYNC_LOCK_ERROR",
+            "The synchronization lock backend failed.",
+            details={"error_type": type(error.__cause__).__name__ if error.__cause__ else type(error).__name__},
+        )
+    return None
+
+
 class SyncEngine:
     def __init__(
         self,
@@ -77,37 +112,15 @@ class SyncEngine:
         try:
             for feed in sorted(lock_feeds):
                 lock_stack.enter_context(self._feed_lock(feed))
-        except LockConflictError as error:
-            lock_stack.close()
-            raise InfoDeskError(
-                "SYNC_ALREADY_RUNNING",
-                "A synchronization for one of the selected feeds is already running.",
-                retryable=True,
-            ) from error
-        except PermissionError as error:
-            lock_stack.close()
-            raise InfoDeskError(
-                "SYNC_LOCK_PERMISSION",
-                "Permission denied while opening a synchronization lock.",
-                retryable=False,
-                details={"error_type": type(error).__name__},
-            ) from error
-        except OSError as error:
-            lock_stack.close()
-            raise InfoDeskError(
-                "SYNC_LOCK_IO",
-                "Filesystem error while opening a synchronization lock.",
-                retryable=False,
-                details={"error_type": type(error).__name__},
-            ) from error
-        except LockOperationError as error:
-            lock_stack.close()
-            raise InfoDeskError(
-                "SYNC_LOCK_ERROR",
-                "The synchronization lock backend failed.",
-                retryable=False,
-                details={"error_type": type(error.__cause__).__name__ if error.__cause__ else type(error).__name__},
-            ) from error
+        except BaseException as error:
+            try:
+                lock_stack.close()
+            except BaseException:
+                logger.exception("Failed to release partially acquired synchronization locks")
+            mapped = _lock_error(error, phase="acquisition")
+            if mapped is not None:
+                raise mapped from error
+            raise
         budget = (
             self.settings.scheduled_budget_sec
             if scheduled
@@ -282,7 +295,7 @@ class SyncEngine:
                     ),
                     conn=connection,
                 )
-            return {
+            result = {
                 "run_id": root_run_id,
                 "started_at": started_at,
                 "finished_at": finished_at,
@@ -294,18 +307,34 @@ class SyncEngine:
                 "watch_refresh": watch_refresh,
                 "warnings": warnings,
             }
-        except Exception:
-            if root_run_id is not None:
-                self.repository.update_run(
-                    root_run_id,
-                    ended_at=self._now(),
-                    status="failed",
-                    error_code="INTERNAL_ERROR",
-                )
-            logger.exception("Synchronization orchestration failed")
+        except BaseException as error:
+            if isinstance(error, Exception):
+                if root_run_id is not None:
+                    try:
+                        self.repository.update_run(
+                            root_run_id,
+                            ended_at=self._now(),
+                            status="failed",
+                            error_code="INTERNAL_ERROR",
+                        )
+                    except Exception:
+                        logger.exception("Failed to mark the synchronization run as failed")
+                logger.exception("Synchronization orchestration failed")
+            try:
+                lock_stack.close()
+            except BaseException:
+                logger.exception("Failed to release synchronization locks after primary failure")
             raise
-        finally:
-            lock_stack.close()
+        else:
+            try:
+                lock_stack.close()
+            except Exception as error:
+                mapped = _lock_error(error, phase="release")
+                if mapped is None:
+                    raise
+                logger.exception("Synchronization locks could not be released after success")
+                raise mapped from error
+            return result
 
     async def _run_discovery_job(
         self,
