@@ -2,7 +2,7 @@
 
 ## 环境准备
 
-安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)。项目最低要求 Python 3.11，CI 测试 3.11 和 3.12，默认版本为 3.12。Linux 是主要部署目标；Windows 尚未验证，程序使用 `fcntl` 锁。
+安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)。项目最低要求 Python 3.11，默认版本为 3.12。CI 在 Ubuntu 和原生 Windows 上测试 Python 3.11/3.12，并在 macOS 上运行 Python 3.12 冒烟测试。Windows 使用原生 Python 与 uv，不需要 Conda 或 WSL。默认数据目录位于当前用户 Home 下的 `~/.information-desk`。systemd 定时部署仅适用于 Linux。
 
 ```bash
 uv python install
@@ -12,6 +12,26 @@ uv run --no-dev info-desk doctor
 ```
 
 `doctor` 检查数据库迁移版本、SQLite 完整性和外键、数据目录与数据库权限、运行锁目录权限以及配置。若从项目根目录执行，也会报告 `uv.lock` 是否存在；独立安装的 wheel 没有项目锁文件时此项是提示，不影响运行。当前 schema 为 v3；v1/v2 数据库会在初始化时以增量事务迁移，不需要删除或重建用户数据库。
+
+Linux/macOS 上 `doctor` 检查私有 POSIX 权限位（数据目录 `0700`、数据库和锁文件 `0600`）。Windows 使用继承的 NTFS ACL；本工具不检查 ACL，并将权限项明确显示为 `not_checked`，不会据此宣称文件安全。
+
+### Windows PowerShell
+
+以下命令在原生 Windows Python 环境中运行；不需要 WSL 或 Conda：
+
+```powershell
+git clone https://github.com/Tuzfucius/information-desk.git
+cd information-desk
+
+uv python install
+uv sync --locked
+
+uv run info-desk init
+uv run info-desk doctor
+uv run info-desk status
+```
+
+Windows MCP Host 的项目环境入口通常为 `C:/path/to/information-desk/.venv/Scripts/info-desk.exe`。Linux/macOS 项目环境入口为 `/path/to/information-desk/.venv/bin/info-desk`。Windows 自动定时任务需要部署者另行配置 Windows Task Scheduler；本项目当前未提供或验证 Windows 常驻服务安装方案。
 
 可以将仓库根目录的 `config.example.toml` 复制为数据目录中的 `config.toml` 并调整。设置 `INFO_DESK_HOME` 后该路径优先于 TOML 的 `data.home`。相对的 `data.database` 路径相对于数据目录解析。
 
@@ -52,6 +72,8 @@ export HF_TOKEN="..."
   }
 }
 ```
+
+Linux/macOS MCP Host 使用 `.venv/bin/info-desk`；Windows 使用 `.venv/Scripts/info-desk.exe`。`INFO_DESK_HOME` 应设为当前用户可访问的数据目录。
 
 默认 `standard` 提供本地查询、来源探查、人工整理和联网刷新。使用 `--profile read-only` 可限制为本地检索、事件读取与状态查询。MCP stdio 的 stdout 专用于协议消息。诊断和错误日志写入 stderr 或轮转文件。
 

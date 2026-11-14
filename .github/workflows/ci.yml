@@ -28,11 +28,12 @@ jobs:
       - run: uv run --locked python -m compileall -q src tests
 
   tests:
-    name: Offline tests (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: Offline tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12"]
     env:
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
@@ -45,34 +46,126 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked --python ${{ matrix.python-version }}
+      - run: uv run --locked --python ${{ matrix.python-version }} ruff check .
+      - name: Import project modules
+        run: >-
+          uv run --locked --python ${{ matrix.python-version }} python -c
+          "import info_desk.cli, info_desk.server, info_desk.sync_engine, info_desk.storage.sqlite, info_desk.integrations.aihot"
+      - name: Native Windows CLI and SQLite smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          INFO_DESK_HOME: ${{ runner.temp }}/information desk 中文
+        run: |
+          uv run --locked --python ${{ matrix.python-version }} info-desk --help
+          uv run --locked --python ${{ matrix.python-version }} info-desk init
+          uv run --locked --python ${{ matrix.python-version }} info-desk doctor
+          uv run --locked --python ${{ matrix.python-version }} info-desk status
+      - name: Linux CLI and SQLite smoke
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          INFO_DESK_HOME: ${{ runner.temp }}/information desk 中文
+        run: |
+          uv run --locked --python ${{ matrix.python-version }} info-desk --help
+          uv run --locked --python ${{ matrix.python-version }} info-desk init
+          uv run --locked --python ${{ matrix.python-version }} info-desk doctor
+          uv run --locked --python ${{ matrix.python-version }} info-desk status
       - run: >-
           uv run --locked --python ${{ matrix.python-version }} pytest -p pytest_asyncio.plugin -p pytest_cov.plugin
           -m "not live" --cov=info_desk --cov-report=term-missing
           --cov-report=xml --cov-fail-under=80 -q
 
   wheel:
-    name: Build and install wheel (Python 3.11)
-    runs-on: ubuntu-latest
+    name: Build and install wheel (${{ matrix.os }}, Python 3.12)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
       - run: uv build
-      - run: uv venv --python 3.11 .wheel-venv
-      - run: uv pip install --python .wheel-venv/bin/python dist/*.whl
-      - name: Verify packaged SQL and installed CLI
+      - run: uv venv --python 3.12 .wheel-venv
+      - name: Install wheel and verify CLI (POSIX)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          .wheel-venv/bin/python -c 'from importlib.resources import files; root = files("info_desk.storage").joinpath("sql"); assert all(root.joinpath(name).is_file() for name in ("001_initial.sql", "002_reliability.sql", "003_m5_runtime.sql"))'
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          python="$GITHUB_WORKSPACE/.wheel-venv/bin/python"
+          uv pip install --python "$python" "$wheel"
+          "$python" -c 'from importlib.resources import files; root = files("info_desk.storage").joinpath("sql"); assert all(root.joinpath(name).is_file() for name in ("001_initial.sql", "002_reliability.sql", "003_m5_runtime.sql"))'
           smoke_dir="$(mktemp -d)"
           cd "$smoke_dir"
-          INFO_DESK_HOME="$smoke_dir/home" "$GITHUB_WORKSPACE/.wheel-venv/bin/info-desk" init
-          INFO_DESK_HOME="$smoke_dir/home" "$GITHUB_WORKSPACE/.wheel-venv/bin/info-desk" doctor > doctor.json
-          python -c 'import json; result=json.load(open("doctor.json", encoding="utf-8")); assert result["ok"] is True; assert result["schema_version"] == 3'
+          export INFO_DESK_HOME="$smoke_dir/home"
+          "$GITHUB_WORKSPACE/.wheel-venv/bin/info-desk" --help >/dev/null
+          "$GITHUB_WORKSPACE/.wheel-venv/bin/info-desk" init
+          "$GITHUB_WORKSPACE/.wheel-venv/bin/info-desk" doctor > doctor.json
+          "$GITHUB_WORKSPACE/.wheel-venv/bin/info-desk" status >/dev/null
+          "$python" -c 'import json; result=json.load(open("doctor.json", encoding="utf-8")); assert result["ok"] is True; assert result["schema_version"] == 3'
+      - name: Install wheel and verify CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $wheel = (Get-ChildItem dist/*.whl | Select-Object -First 1).FullName
+          $venv = (Resolve-Path .wheel-venv).Path
+          $python = Join-Path $venv "Scripts/python.exe"
+          $entry = Join-Path $venv "Scripts/info-desk.exe"
+          uv pip install --python $python $wheel
+          & $python -c "from importlib.resources import files; root = files('info_desk.storage').joinpath('sql'); assert all(root.joinpath(name).is_file() for name in ('001_initial.sql', '002_reliability.sql', '003_m5_runtime.sql'))"
+          $smoke = Join-Path $env:RUNNER_TEMP "information desk wheel 中文"
+          New-Item -ItemType Directory -Force -Path $smoke | Out-Null
+          $env:INFO_DESK_HOME = Join-Path $smoke "home"
+          Push-Location $smoke
+          try {
+            & $entry --help | Out-Null
+            & $entry init
+            & $entry doctor | Set-Content -Encoding utf8 doctor.json
+            & $entry status | Out-Null
+            $doctor = Get-Content doctor.json -Raw | ConvertFrom-Json
+            if (-not $doctor.ok -or $doctor.schema_version -ne 3) { throw "Installed wheel CLI smoke failed" }
+          } finally {
+            Pop-Location
+          }
+
+  macos-smoke:
+    name: macOS 3.12 portability smoke
+    runs-on: macos-latest
+    env:
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+      - run: uv lock --check
+      - run: uv sync --locked --python 3.12
+      - run: uv run --locked --python 3.12 ruff check .
+      - run: >-
+          uv run --locked --python 3.12 python -c
+          "import info_desk.cli, info_desk.server, info_desk.sync_engine, info_desk.storage.sqlite, info_desk.integrations.aihot"
+      - name: macOS CLI, locks, and MCP smoke
+        shell: bash
+        env:
+          INFO_DESK_HOME: ${{ runner.temp }}/information desk 中文
+        run: |
+          uv run --locked --python 3.12 info-desk --help >/dev/null
+          uv run --locked --python 3.12 info-desk init
+          uv run --locked --python 3.12 info-desk doctor
+          uv run --locked --python 3.12 info-desk status >/dev/null
+          uv run --locked --python 3.12 pytest -p pytest_asyncio.plugin -q \
+            tests/integration/test_cross_platform_lock.py \
+            tests/contract/test_mcp_stdio.py \
+            tests/contract/test_aihot_stdio_mock.py
 
   live-smoke:
     name: Bounded live source smoke

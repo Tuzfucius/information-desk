@@ -24,6 +24,8 @@ information-desk/
 ├── src/info_desk/
 │   ├── __init__.py
 │   ├── app.py
+│   ├── locking.py
+│   ├── platform_utils.py
 │   ├── cli.py
 │   ├── server.py
 │   ├── config.py
@@ -95,6 +97,7 @@ information-desk/
 |---|---|
 | `pyproject.toml` | 定义 Python 3.11+、依赖范围、测试配置及入口 `info-desk = info_desk.cli:main`。将 `storage/sql/*.sql` 纳入 wheel |
 | `app.py` | 组装配置、Repository、HTTP 客户端、适配器及 Service。按 CLI 命令和 MCP 模式初始化所需资源，统一管理生命周期 |
+| `locking.py`、`platform_utils.py` | 使用 portalocker 管理跨平台非阻塞进程锁；集中设置 POSIX 私有目录/文件权限，并在 Windows 将 NTFS ACL 检查标为未检查 |
 | `cli.py`、`server.py` | 将命令行或 MCP 调用映射到 Service。CLI 负责退出码和展示，MCP 负责工具注册、参数与输出 schema。两层均通过同一契约验证 |
 | `config.py` | 加载 TOML 与环境变量，校验运行目录、启用来源、预算和限速。运行数据使用 `INFO_DESK_HOME` 或默认目录 |
 | `contracts.py` | Pydantic 请求、公开结果、通用错误与告警。保持 MCP schema、CLI JSON 和 Service 的输入输出含义一致 |
@@ -119,7 +122,7 @@ information-desk/
 |---|---|
 | 周期同步可恢复 | 持久化 `coverage_from`、`completed_until` 与待重扫分段。服务器时间过滤来源可细分窗口；安全 continuation token 可跨运行续读；动态 offset 来源失败后幂等重扫。已完成子段保留到窗口最终提交，连续前缀可推进水位线 |
 | 手动刷新独立计量 | 单次请求使用根运行 ID，子作业记录归属同一运行。事件写入时记录产生它的运行 ID，手工导入等非同步事件允许为空。事件预览用运行 ID 取样，消费方按全局 Event ID 读取 |
-| 进程间互斥 | 锁文件位于数据目录的 `run/`，Linux 使用非阻塞 `flock`。手动同步锁定所选 Feed；周期同步额外锁定注册表全部 Feed，因为 Watch 队列可检查任一注册来源。锁获取顺序固定 |
+| 进程间互斥 | 锁文件位于数据目录的 `run/`，portalocker 在 Linux、Windows 和 macOS 上使用独占非阻塞 OS 锁。手动同步锁定所选 Feed；周期同步额外锁定注册表全部 Feed，因为 Watch 队列可检查任一注册来源。锁获取顺序固定，锁文件保留以维持稳定文件对象 |
 | 审核保护 | 事务内按 `item_id + revision` 校验审核变更。自动同步只写自动管理字段。展示字段或来源发生实质变化时更新 `updated_at`；变更人工可编辑字段的路径均维护 `revision` |
 | 事件快照 | 在 `change_events.payload_json` 持久化当时的来源字段和事件载荷，以便仓库改名后仍能追溯原事件。合并后的事件保留 ID |
 | 分页与检索 | 初始迁移包含 Item 排序、来源身份及发布日期查询索引。FTS5 可用时建立全文索引并在同一写事务维护，查询端提供 LIKE 降级 |

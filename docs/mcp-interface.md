@@ -30,6 +30,8 @@ AIHOT 集成为可选的上游 MCP Client。仅当配置 `[aihot].enabled = true
 
 同一个 MCP stdio 服务以 `info-desk serve --transport stdio --profile <profile>` 启动。默认使用 `standard`。部署方在启动时选择模式，工具参数不能切换模式。
 
+支持 Linux 和 Windows 原生 Python 环境；CI 在 Python 3.11/3.12 上执行这两个平台的 MCP stdio 与离线测试。macOS 运行 Python 3.12 兼容性冒烟测试。项目虚拟环境中的 MCP Host 命令在 Linux/macOS 为 `.venv/bin/info-desk`，在 Windows 为 `.venv/Scripts/info-desk.exe`。Windows 下 `doctor` 将 NTFS ACL 权限检查标记为 `not_checked`；本地 MCP 工具和 AIHOT profile 行为不变。
+
 | 工具 | `read-only` | `standard` | 副作用 |
 |---|---|---|---|
 | `search_items` | 注册 | 注册 | 读取 SQLite |
@@ -88,6 +90,7 @@ AIHOT 集成为可选的上游 MCP Client。仅当配置 `[aihot].enabled = true
 | `UPSTREAM_TIMEOUT`、`UPSTREAM_UNAVAILABLE` | 上游暂时不可用 | 按重试提示处理 |
 | `RATE_LIMITED` | 上游配额不足 | 按 `retry_after_seconds` 等待 |
 | `SYNC_ALREADY_RUNNING` | 至少一个所选 feed 锁被占用且本次刷新未启动 | 查询同步状态 |
+| `SYNC_LOCK_PERMISSION`、`SYNC_LOCK_IO`、`SYNC_LOCK_ERROR` | 打开或使用跨平台同步锁时发生权限、文件系统或锁后端错误 | 检查数据目录和文件系统支持；这类错误不会被误报为并发冲突 |
 | `REVISION_CONFLICT` | 条目修订号与请求不一致 | 重读并重新判断变更 |
 | `MERGE_CONFLICT` | 来源指向多个已存在实体 | 记录冲突，交由管理 CLI |
 | `DB_BUSY`、`SCHEMA_MISMATCH` | 写锁等待耗尽或版本不匹配 | 前者有限重试，后者由管理员处理 |

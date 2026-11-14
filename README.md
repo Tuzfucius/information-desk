@@ -12,7 +12,7 @@ A local-first research and open-source intelligence service for AI agents. It co
 
 ## Requirements
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/). Python 3.11 is the minimum allowed version; CI tests 3.11 and 3.12, with 3.12 the default. Linux is the primary deployment target. Windows has not been verified and the application uses `fcntl` locks; the scheduled deployment uses systemd.
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/). Python 3.11 is the minimum allowed version; CI validates Ubuntu and native Windows on Python 3.11 and 3.12. macOS has a Python 3.12 portability smoke job. Python 3.12 is the default. Windows uses native Python and uv; Conda and WSL are not required. The data directory defaults to `~/.information-desk` under the current user's home. The systemd deployment below is Linux-only.
 
 ## Quick Start
 
@@ -24,6 +24,20 @@ uv sync --locked --no-dev
 uv run --no-dev info-desk init
 uv run --no-dev info-desk doctor
 uv run --no-dev info-desk status
+```
+
+On Windows, run these commands in PowerShell; this uses the native Windows Python environment and a user-local data directory:
+
+```powershell
+git clone https://github.com/Tuzfucius/information-desk.git
+cd information-desk
+
+uv python install
+uv sync --locked
+
+uv run info-desk init
+uv run info-desk doctor
+uv run info-desk status
 ```
 
 uv creates an isolated `.venv` in the project. `init` creates or migrates the database; run it before starting the MCP server. For an independent command that works outside the checkout:
@@ -59,7 +73,25 @@ After initializing the database, configure the host with the absolute path to th
 }
 ```
 
+For a synced Windows checkout, use the Windows console entry point and a Windows data path:
+
+```json
+{
+  "mcpServers": {
+    "information-desk": {
+      "command": "C:/path/to/information-desk/.venv/Scripts/info-desk.exe",
+      "args": ["serve", "--transport", "stdio", "--profile", "standard"],
+      "env": {
+        "INFO_DESK_HOME": "C:/Users/username/.information-desk"
+      }
+    }
+  }
+}
+```
+
 `standard` is the default and permits source inspection, curation and network refresh as well as local search, events and status. Select `--profile read-only` to restrict the server to local queries. Inject tokens through the host's environment configuration when needed. Stdout is reserved for MCP protocol messages; diagnostics go to stderr or log files. The SDK stdio subprocess is tested; a specific end-user MCP host has not yet been verified.
+
+Linux entry points use `.venv/bin/info-desk`; Windows uses `.venv/Scripts/info-desk.exe`. `doctor` checks POSIX private mode bits on Linux and macOS. Windows reports filesystem ACL checks as `not_checked`; it does not claim to have audited NTFS permissions.
 
 ## Third-party Integrations
 
