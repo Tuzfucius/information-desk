@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from info_desk.platform_utils import ensure_private_directory, ensure_private_file
+from info_desk.platform_utils import ensure_parent_directory, ensure_private_file
 
 
 class Database:
@@ -22,7 +22,7 @@ class Database:
             uri = f"{self.path.resolve().as_uri()}?mode=ro"
             connection = sqlite3.connect(uri, uri=True, timeout=self.busy_timeout_ms / 1000)
         else:
-            ensure_private_directory(self.path.parent)
+            ensure_parent_directory(self.path.parent)
             connection = sqlite3.connect(self.path, timeout=self.busy_timeout_ms / 1000)
             try:
                 ensure_private_file(self.path)
@@ -60,7 +60,7 @@ class Database:
     def backup_to(self, destination: str | Path) -> Path:
         """Create a consistent backup, including committed WAL data."""
         target = Path(destination).expanduser()
-        ensure_private_directory(target.parent)
+        ensure_parent_directory(target.parent)
         descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(descriptor)
         try:

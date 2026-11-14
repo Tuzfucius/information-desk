@@ -132,6 +132,8 @@ def _try_lock(path: Path) -> str:
 def _special_lock_dir(tmp_path: Path) -> Path:
     directory = tmp_path / "中文 folder with spaces"
     directory.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        directory.chmod(0o700)
     if os.name == "nt":
         assert Path(directory).drive, "native Windows test path should include a drive"
     return directory

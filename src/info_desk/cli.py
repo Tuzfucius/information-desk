@@ -24,7 +24,10 @@ from info_desk.contracts import (
 )
 from info_desk.exceptions import InfoDeskError
 from info_desk.integrations.aihot import AIHOTClient
-from info_desk.platform_utils import ensure_private_directory, inspect_path_permissions
+from info_desk.platform_utils import (
+    ensure_app_private_directory,
+    inspect_path_permissions,
+)
 from info_desk.server import serve
 from info_desk.storage.migrations import SCHEMA_VERSION
 
@@ -184,22 +187,23 @@ def main() -> None:
         )
         raise SystemExit(2)
 
-    if args.command in {"init", "doctor", "sync"}:
-        service, repository, client = create_application(
-            settings=settings, initialize=True
-        )
-    elif args.command == "serve" and args.profile == "standard":
-        service, repository, client = create_application(settings=settings)
-    elif args.command == "serve":
-        service, repository, client = create_application(
-            settings=settings, readonly=True
-        )
-    else:
-        service, repository, client = create_application(settings=settings)
-
+    client = None
     try:
+        if args.command in {"init", "doctor", "sync"}:
+            service, repository, client = create_application(
+                settings=settings, initialize=True
+            )
+        elif args.command == "serve" and args.profile == "standard":
+            service, repository, client = create_application(settings=settings)
+        elif args.command == "serve":
+            service, repository, client = create_application(
+                settings=settings, readonly=True
+            )
+        else:
+            service, repository, client = create_application(settings=settings)
+
         if args.command == "init":
-            ensure_private_directory(settings.home)
+            ensure_app_private_directory(settings.home)
             _print({"ok": True, "home": settings.home, "database": settings.database_path()})
             return
         if args.command == "doctor":
@@ -225,6 +229,12 @@ def main() -> None:
                 "foreign_keys": {"ok": foreign_key_errors == 0, "violations": foreign_key_errors},
                 "home_permissions": home_permissions,
                 "database_permissions": database_permissions,
+                "database_parent_directory": {
+                    "ok": None,
+                    "status": "not_managed",
+                    "mode": None,
+                    "message": "Parent directory permissions are not modified or audited.",
+                },
                 "run_lock_directory": {**lock_permissions, "present": run_dir.exists()},
                 "uv_lock": {"present": lockfile.is_file(), "path": lockfile if lockfile.is_file() else None},
                 "configuration": {"ok": True, "feeds": settings.enabled_feeds},
@@ -410,6 +420,19 @@ def main() -> None:
                     "retryable": error.retryable,
                     "retry_after_seconds": error.retry_after_seconds,
                     "details": error.details,
+                },
+            }
+        )
+        raise SystemExit(2)
+    except PermissionError as error:
+        _print(
+            {
+                "ok": False,
+                "error": {
+                    "code": "FILESYSTEM_PERMISSION",
+                    "message": str(error),
+                    "retryable": False,
+                    "details": {},
                 },
             }
         )

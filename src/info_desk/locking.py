@@ -11,7 +11,7 @@ from typing import NoReturn
 import portalocker
 from portalocker.exceptions import AlreadyLocked, LockException
 
-from info_desk.platform_utils import ensure_private_directory, ensure_private_file
+from info_desk.platform_utils import ensure_app_private_directory, ensure_private_file
 
 
 class LockConflictError(Exception):
@@ -39,7 +39,7 @@ def _raise_lock_operation_error(error: LockException, operation: str, name: str)
 def acquire_file_lock(path: str | Path) -> Iterator[None]:
     """Acquire an exclusive non-blocking OS lock and release it on every exit."""
     lock_path = Path(path).expanduser()
-    ensure_private_directory(lock_path.parent)
+    ensure_app_private_directory(lock_path.parent)
 
     # Create the persistent lock inode with restrictive POSIX mode. The file's
     # existence never indicates ownership; portalocker supplies the OS lock.

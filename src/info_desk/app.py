@@ -6,7 +6,7 @@ import httpx
 
 from info_desk.config import Settings, load_settings
 from info_desk.http_client import SafeHttpClient
-from info_desk.platform_utils import ensure_private_directory
+from info_desk.platform_utils import ensure_app_private_directory
 from info_desk.service import InformationService
 from info_desk.storage.repository import Repository
 from info_desk.storage.sqlite import Database
@@ -20,7 +20,7 @@ def create_application(
 ) -> tuple[InformationService, Repository, SafeHttpClient]:
     resolved = settings or load_settings()
     if not readonly:
-        ensure_private_directory(resolved.home)
+        ensure_app_private_directory(resolved.home)
     database = Database(resolved.database_path(), readonly=readonly)
     repository = Repository(database)
     if initialize or readonly:

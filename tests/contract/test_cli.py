@@ -27,27 +27,35 @@ def _run(home, *arguments):
 
 
 def test_cli_initializes_diagnoses_and_serializes_offline_results(tmp_path) -> None:
-    initialized = _run(tmp_path / "isolated", "init")
+    parent = tmp_path / "ordinary parent"
+    parent.mkdir()
+    if os.name != "nt":
+        parent.chmod(0o755)
+    home = parent / "isolated"
+    initialized = _run(home, "init")
     assert initialized.returncode == 0
     assert json.loads(initialized.stdout)["ok"] is True
+    if os.name != "nt":
+        assert parent.stat().st_mode & 0o777 == 0o755
+        assert home.stat().st_mode & 0o777 == 0o700
 
-    doctor = _run(tmp_path / "isolated", "doctor")
+    doctor = _run(home, "doctor")
     doctor_data = json.loads(doctor.stdout)
     assert doctor.returncode == 0
     assert doctor_data["ok"] is True
     assert doctor_data["schema_version"] == 3
 
-    search = _run(tmp_path / "isolated", "search", "--keyword", "Diffusion Policy")
+    search = _run(home, "search", "--keyword", "Diffusion Policy")
     assert search.returncode == 0
     assert json.loads(search.stdout) == {"items": [], "next_cursor": None}
 
-    events = _run(tmp_path / "isolated", "events", "--after-id", "0", "--limit", "10")
+    events = _run(home, "events", "--after-id", "0", "--limit", "10")
     event_data = json.loads(events.stdout)
     assert events.returncode == 0
     assert event_data["events"] == []
     assert event_data["next_after_id"] == 0
 
-    conflicts = _run(tmp_path / "isolated", "conflicts", "pending")
+    conflicts = _run(home, "conflicts", "pending")
     assert conflicts.returncode == 0
     assert json.loads(conflicts.stdout) == {"pending_sources": []}
 
@@ -58,6 +66,20 @@ def test_cli_help_does_not_create_the_configured_data_directory(tmp_path) -> Non
     assert result.returncode == 0
     assert "usage:" in result.stdout.lower()
     assert not home.exists()
+
+
+def test_cli_reports_insecure_existing_app_home_without_chmod(tmp_path) -> None:
+    if os.name == "nt":
+        return
+    home = tmp_path / "shared home"
+    home.mkdir(mode=0o755)
+    home.chmod(0o755)
+    result = _run(home, "doctor")
+    assert result.returncode == 2
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "FILESYSTEM_PERMISSION"
+    assert "set its permissions to 0700 manually" in payload["error"]["message"]
+    assert home.stat().st_mode & 0o777 == 0o755
 
 
 def test_cli_invalid_search_is_structured_and_has_no_traceback(tmp_path) -> None:

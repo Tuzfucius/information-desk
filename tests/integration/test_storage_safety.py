@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from info_desk.app import create_application
+from info_desk.config import Settings
 from info_desk.storage.migrations import schema_version
 from info_desk.storage.repository import Repository
 from info_desk.storage.sqlite import Database
@@ -165,6 +167,49 @@ def test_online_backup_restores_wal_database_and_never_overwrites_existing_file(
     with pytest.raises(FileExistsError):
         repository.database.backup_to(destination)
     assert destination.read_bytes() == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not represented by NTFS ACLs")
+def test_database_and_backup_preserve_existing_parent_permissions(tmp_path: Path) -> None:
+    parent = tmp_path / "shared 0755"
+    parent.mkdir(mode=0o755)
+    parent.chmod(0o755)
+    database = Database(parent / "primary.db")
+    repository = Repository(database)
+    repository.initialize()
+    item_id = repository.create_item({"title": "safe"}, now="2026-01-01T00:00:00Z")
+    assert repository.get_item(item_id)["title"] == "safe"
+    assert parent.stat().st_mode & 0o777 == 0o755
+    assert (parent / "primary.db").stat().st_mode & 0o777 == 0o600
+
+    backup_dir = tmp_path / "backup 0755"
+    backup_dir.mkdir(mode=0o755)
+    backup_dir.chmod(0o755)
+    backup = database.backup_to(backup_dir / "snapshot.db")
+    assert backup.exists()
+    assert backup_dir.stat().st_mode & 0o777 == 0o755
+    assert backup.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(FileExistsError):
+        database.backup_to(backup)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not represented by NTFS ACLs")
+async def test_create_application_keeps_user_parent_and_secures_its_home(tmp_path: Path) -> None:
+    parent = tmp_path / "user-selected parent"
+    parent.mkdir(mode=0o755)
+    parent.chmod(0o755)
+    home = parent / "information desk"
+    _service, repository, client = create_application(
+        settings=Settings(home=home), initialize=True
+    )
+    try:
+        assert repository.database.path.exists()
+        assert parent.stat().st_mode & 0o777 == 0o755
+        assert home.stat().st_mode & 0o777 == 0o700
+        assert repository.database.path.stat().st_mode & 0o777 == 0o600
+    finally:
+        await client.aclose()
 
 
 def test_fts5_and_like_fallback_search_english_and_chinese(repository, monkeypatch) -> None:

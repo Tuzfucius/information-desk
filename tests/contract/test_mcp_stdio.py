@@ -42,6 +42,8 @@ async def test_stdio_read_only_profile_lists_calls_and_validates_three_tools(tmp
     home = tmp_path / "read-only-home"
     repository = Repository(Database(home / "intel.db"))
     repository.initialize()
+    if os.name != "nt":
+        home.chmod(0o700)
     with repository.transaction() as connection:
         item_id = repository.create_item(
             {"title": "Needle discovery"}, now="2026-01-01T00:00:00Z", conn=connection
@@ -95,6 +97,8 @@ async def test_stdio_standard_profile_has_typed_schemas_and_structured_business_
     home = tmp_path / "standard-home"
     repository = Repository(Database(home / "intel.db"))
     repository.initialize()
+    if os.name != "nt":
+        home.chmod(0o700)
     with repository.transaction() as connection:
         item_id = repository.create_item(
             {"title": "Concurrency item"}, now="2026-01-01T00:00:00Z", conn=connection
