@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,21 @@ def test_environment_home_overrides_toml_and_relative_database(tmp_path, monkeyp
     monkeypatch.setenv("INFO_DESK_HOME", str(tmp_path / "env-home"))
     settings = load_settings(config)
     assert settings.database_path() == tmp_path / "env-home" / "relative.db"
+
+
+def test_config_paths_support_unicode_and_spaces(tmp_path, monkeypatch) -> None:
+    home = tmp_path / "配置目录 with spaces"
+    config = tmp_path / "配置 文件.toml"
+    config.write_text(
+        f'[data]\nhome = {json.dumps(str(home), ensure_ascii=False)}\ndatabase = "资料 #1.db"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("INFO_DESK_HOME", raising=False)
+
+    settings = load_settings(config)
+
+    assert settings.home == home
+    assert settings.database_path() == home / "资料 #1.db"
 
 
 def test_missing_config_uses_default_and_invalid_settings_raise_value_error(tmp_path, monkeypatch) -> None:

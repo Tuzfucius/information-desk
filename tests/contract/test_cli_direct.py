@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import pytest
@@ -30,8 +31,12 @@ def test_cli_direct_init_doctor_status_and_backup(monkeypatch, capsys, tmp_path)
     assert doctor["schema_version"] == 3
     assert doctor["checks"]["integrity"]["result"] == "ok"
     assert doctor["checks"]["foreign_keys"]["violations"] == 0
-    assert doctor["checks"]["home_permissions"]["mode"] == "0o700"
-    assert doctor["checks"]["database_permissions"]["mode"] == "0o600"
+    if os.name == "nt":
+        assert doctor["checks"]["home_permissions"]["status"] == "not_checked"
+        assert doctor["checks"]["database_permissions"]["status"] == "not_checked"
+    else:
+        assert doctor["checks"]["home_permissions"]["mode"] == "0o700"
+        assert doctor["checks"]["database_permissions"]["mode"] == "0o600"
     status = _invoke(monkeypatch, capsys, home, "status")
     assert {job["last_status"] for job in status["jobs"]} == {"never"}
     assert len(status["jobs"]) == 4

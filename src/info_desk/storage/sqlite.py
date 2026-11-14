@@ -6,6 +6,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from info_desk.platform_utils import ensure_private_directory, ensure_private_file
+
 
 class Database:
     """Small SQLite connection and transaction manager."""
@@ -20,9 +22,13 @@ class Database:
             uri = f"{self.path.resolve().as_uri()}?mode=ro"
             connection = sqlite3.connect(uri, uri=True, timeout=self.busy_timeout_ms / 1000)
         else:
-            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            ensure_private_directory(self.path.parent)
             connection = sqlite3.connect(self.path, timeout=self.busy_timeout_ms / 1000)
-            os.chmod(self.path, 0o600)
+            try:
+                ensure_private_file(self.path)
+            except BaseException:
+                connection.close()
+                raise
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute(f"PRAGMA busy_timeout = {int(self.busy_timeout_ms)}")
@@ -54,7 +60,7 @@ class Database:
     def backup_to(self, destination: str | Path) -> Path:
         """Create a consistent backup, including committed WAL data."""
         target = Path(destination).expanduser()
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        ensure_private_directory(target.parent)
         descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(descriptor)
         try:
@@ -64,7 +70,7 @@ class Database:
                     source.backup(backup)
                 finally:
                     backup.close()
-                os.chmod(target, 0o600)
+                ensure_private_file(target)
         except BaseException:
             target.unlink(missing_ok=True)
             raise

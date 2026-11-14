@@ -23,6 +23,7 @@ from info_desk.contracts import (
 )
 from info_desk.exceptions import InfoDeskError
 from info_desk.integrations.aihot import AIHOTClient
+from info_desk.platform_utils import ensure_private_directory, inspect_path_permissions
 from info_desk.server import serve
 from info_desk.storage.migrations import SCHEMA_VERSION
 
@@ -190,8 +191,7 @@ def main() -> None:
 
     try:
         if args.command == "init":
-            settings.home.mkdir(parents=True, exist_ok=True, mode=0o700)
-            settings.home.chmod(0o700)
+            ensure_private_directory(settings.home)
             _print({"ok": True, "home": settings.home, "database": settings.database_path()})
             return
         if args.command == "doctor":
@@ -202,23 +202,27 @@ def main() -> None:
                 ).fetchone() is not None
                 integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
                 foreign_key_errors = len(connection.execute("PRAGMA foreign_key_check").fetchall())
-            home_mode = settings.home.stat().st_mode & 0o777
-            database_mode = settings.database_path().stat().st_mode & 0o777
+            home_permissions = inspect_path_permissions(settings.home)
+            database_permissions = inspect_path_permissions(settings.database_path())
             run_dir = settings.home / "run"
-            lock_dir_ok = not run_dir.exists() or (run_dir.stat().st_mode & 0o077) == 0
+            lock_permissions = (
+                inspect_path_permissions(run_dir)
+                if run_dir.exists()
+                else {"ok": True, "status": "not_present", "mode": None, "message": None}
+            )
             lockfile = Path.cwd() / "uv.lock"
             checks = {
                 "schema": {"ok": version == SCHEMA_VERSION, "version": version, "expected": SCHEMA_VERSION},
                 "integrity": {"ok": integrity == "ok", "result": integrity},
                 "foreign_keys": {"ok": foreign_key_errors == 0, "violations": foreign_key_errors},
-                "home_permissions": {"ok": home_mode & 0o077 == 0, "mode": oct(home_mode)},
-                "database_permissions": {"ok": database_mode & 0o077 == 0, "mode": oct(database_mode)},
-                "run_lock_directory": {"ok": lock_dir_ok, "present": run_dir.exists()},
+                "home_permissions": home_permissions,
+                "database_permissions": database_permissions,
+                "run_lock_directory": {**lock_permissions, "present": run_dir.exists()},
                 "uv_lock": {"present": lockfile.is_file(), "path": lockfile if lockfile.is_file() else None},
                 "configuration": {"ok": True, "feeds": settings.enabled_feeds},
             }
             ok = all(
-                bool(check.get("ok", True))
+                check.get("ok", True) is not False
                 for check in checks.values()
             )
             _print(

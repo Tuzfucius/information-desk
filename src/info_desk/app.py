@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import os
-
 import httpx
 
 from info_desk.config import Settings, load_settings
 from info_desk.http_client import SafeHttpClient
+from info_desk.platform_utils import ensure_private_directory
 from info_desk.service import InformationService
 from info_desk.storage.repository import Repository
 from info_desk.storage.sqlite import Database
@@ -21,8 +20,7 @@ def create_application(
 ) -> tuple[InformationService, Repository, SafeHttpClient]:
     resolved = settings or load_settings()
     if not readonly:
-        resolved.home.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(resolved.home, 0o700)
+        ensure_private_directory(resolved.home)
     database = Database(resolved.database_path(), readonly=readonly)
     repository = Repository(database)
     if initialize or readonly:

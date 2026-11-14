@@ -52,6 +52,14 @@ def test_cli_initializes_diagnoses_and_serializes_offline_results(tmp_path) -> N
     assert json.loads(conflicts.stdout) == {"pending_sources": []}
 
 
+def test_cli_help_does_not_create_the_configured_data_directory(tmp_path) -> None:
+    home = tmp_path / "中文 home with spaces"
+    result = _run(home, "--help")
+    assert result.returncode == 0
+    assert "usage:" in result.stdout.lower()
+    assert not home.exists()
+
+
 def test_cli_invalid_search_is_structured_and_has_no_traceback(tmp_path) -> None:
     _run(tmp_path / "isolated", "init")
     result = _run(tmp_path / "isolated", "search", "--limit", "0")

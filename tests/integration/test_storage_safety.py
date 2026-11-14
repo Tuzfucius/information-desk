@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -94,6 +95,19 @@ def test_read_only_open_rejects_unmigrated_schema(tmp_path: Path) -> None:
         Repository(Database(path, readonly=True)).initialize()
 
 
+def test_read_only_sqlite_uri_handles_unicode_spaces_and_uri_characters(tmp_path: Path) -> None:
+    path = tmp_path / "中文 folder #1 database.db"
+    repository = Repository(Database(path))
+    repository.initialize()
+    item_id = repository.create_item(
+        {"title": "readonly path"}, now="2026-01-01T00:00:00Z"
+    )
+
+    readonly_repository = Repository(Database(path, readonly=True))
+    readonly_repository.initialize()
+    assert readonly_repository.get_item(item_id)["title"] == "readonly path"
+
+
 def test_schema_allows_custom_identifiers_and_rejects_invalid_feed(repository) -> None:
     repository.upsert_sync_state(
         "valid-custom-feed", "test_stream", {}, now="2026-01-01T00:00:00Z"
@@ -135,7 +149,8 @@ def test_online_backup_restores_wal_database_and_never_overwrites_existing_file(
     backup = repository.database.backup_to(destination)
 
     assert backup.exists()
-    assert backup.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert backup.stat().st_mode & 0o777 == 0o600
     restored = Repository(Database(backup))
     restored.initialize()
     assert restored.get_item(item_id)["title"] == "backup record"
