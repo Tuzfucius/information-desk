@@ -13,6 +13,7 @@ from .base import (
     AdapterError,
     CandidateSource,
     PageResult,
+    SourceCapabilities,
     SourceInspection,
     bounded_get,
     clean_text,
@@ -26,6 +27,8 @@ GITHUB_REPO = re.compile(r"^(?:https?://github\.com/)?([A-Za-z0-9_.-]+/[A-Za-z0-
 
 class HuggingFacePapersAdapter:
     endpoint = "https://huggingface.co/api/daily_papers"
+    capabilities = SourceCapabilities(("hf_paper",), window_resolution_seconds=86_400,
+                                      durable_cursor=True, title_priorities={"hf_paper": 90})
     page_size = 100
 
     def __init__(self, client: httpx.AsyncClient):
@@ -117,6 +120,7 @@ class HuggingFacePapersAdapter:
                     records=records_for_window,
                     next_page_token=f"{current_day}:{next_page}",
                     page_complete=False,
+                    resume_safe=dates[current_day] < datetime.now(UTC).date(),
                 )
             current_day += 1
             current_page = 0

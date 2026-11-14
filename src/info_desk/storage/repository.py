@@ -5,6 +5,7 @@ import re
 import sqlite3
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .migrations import SCHEMA_VERSION, SchemaMismatchError, migrate
@@ -243,6 +244,18 @@ class Repository:
             connection.execute("SELECT count(*) FROM sources WHERE item_id = ?", (item_id,)).fetchone()[0]
         )
 
+    def sources_for_item(
+        self, item_id: int, *, conn: sqlite3.Connection | None = None
+    ) -> list[dict[str, Any]]:
+        with self._read_connection(conn) as connection:
+            rows = connection.execute(
+                """SELECT id, source_type, source_uid, external_id, url, title, description,
+                          published_at, source_updated_at
+                   FROM sources WHERE item_id = ?""",
+                (item_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def get_source(
         self,
         source_type: str,
@@ -365,6 +378,7 @@ class Repository:
         title: str | None = None,
         summary: str | None = None,
         code_status: str | None = None,
+        canonical_source_id: int | None = None,
         conn: sqlite3.Connection | None = None,
     ) -> tuple[str, ...]:
         with self._write_connection(conn) as connection:
@@ -382,11 +396,16 @@ class Repository:
                 changes["summary"] = summary
             if code_status is not None and row["code_status"] != code_status:
                 changes["code_status"] = code_status
+            canonical = connection.execute(
+                "SELECT canonical_source_id FROM items WHERE id = ?", (item_id,)
+            ).fetchone()["canonical_source_id"]
+            if canonical_source_id is not None and canonical != canonical_source_id:
+                changes["canonical_source_id"] = canonical_source_id
             assignments = [f"{key} = ?" for key in changes]
             values = list(changes.values())
             assignments.append("last_seen_at = ?")
             values.append(now)
-            if changes:
+            if any(key != "canonical_source_id" for key in changes):
                 assignments.append("updated_at = ?")
                 values.append(now)
             values.append(item_id)
@@ -404,6 +423,20 @@ class Repository:
         now: str,
         conn: sqlite3.Connection | None = None,
     ) -> tuple[int, bool]:
+        refresh_interval_hours = (
+            source.get("refresh_interval_hours")
+            or source.get("watch_interval_hours")
+            or 24
+        )
+        try:
+            last_checked = source.get("last_checked_at")
+            schedule_from = datetime.fromisoformat(last_checked or now)
+            next_check_at = (
+                schedule_from.astimezone(UTC)
+                + timedelta(hours=int(refresh_interval_hours))
+            ).isoformat(timespec="seconds").replace("+00:00", "Z")
+        except (TypeError, ValueError):
+            next_check_at = now
         fields = {
             "item_id": item_id,
             "source_type": source["source_type"],
@@ -419,6 +452,12 @@ class Repository:
             "last_checked_at": source.get("last_checked_at"),
             "content_hash": source.get("content_hash", ""),
             "metadata_json": _JSON(source.get("metadata", {}), ensure_ascii=False, sort_keys=True),
+            "next_check_at": source.get("next_check_at") or next_check_at,
+            "refresh_interval_hours": refresh_interval_hours,
+            "feed": source.get("feed") or {
+                "arxiv": "arxiv", "hf_paper": "hf_papers",
+                "hf_model": "hf_models", "github_repo": "github",
+            }.get(source["source_type"], source["source_type"]),
         }
         with self._write_connection(conn) as connection:
             existing = connection.execute(
@@ -432,14 +471,20 @@ class Repository:
                     UPDATE sources SET external_id = ?, url = ?, title = ?, description = ?,
                         published_at = ?, source_updated_at = ?, last_seen_at = ?,
                         last_checked_at = COALESCE(?, last_checked_at), content_hash = ?,
-                        metadata_json = ?
+                        metadata_json = ?,
+                        refresh_interval_hours = COALESCE(?, refresh_interval_hours),
+                        feed = ?,
+                        next_check_at = CASE WHEN ? IS NOT NULL THEN ? ELSE next_check_at END
                     WHERE id = ?
                     """,
                     (
                         fields["external_id"], fields["url"], fields["title"],
                         fields["description"], fields["published_at"],
                         fields["source_updated_at"], now, fields["last_checked_at"],
-                        fields["content_hash"], fields["metadata_json"], source_id,
+                        fields["content_hash"], fields["metadata_json"],
+                        fields["refresh_interval_hours"], fields["feed"],
+                        fields["last_checked_at"],
+                        fields["next_check_at"], source_id,
                     ),
                 )
                 return source_id, False
@@ -448,6 +493,37 @@ class Repository:
                 tuple(fields.values()),
             )
             return int(cursor.lastrowid), True
+
+    def record_watch_success(
+        self, source_id: int, *, now: str, next_check_at: str, interval_hours: int
+    ) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                """UPDATE sources SET last_checked_at = ?, last_check_success_at = ?,
+                       next_check_at = ?, consecutive_failures = 0, last_error_code = NULL,
+                       refresh_interval_hours = ? WHERE id = ?""",
+                (now, now, next_check_at, interval_hours, source_id),
+            )
+
+    def record_watch_failure(
+        self, source_id: int, *, now: str, next_check_at: str, error_code: str
+    ) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                """UPDATE sources SET next_check_at = ?, consecutive_failures =
+                       consecutive_failures + 1, last_error_code = ? WHERE id = ?""",
+                (next_check_at, error_code, source_id),
+            )
+
+    def defer_watch_source(
+        self, source_id: int, *, next_check_at: str, reason: str
+    ) -> None:
+        """Schedule an intentionally unsupported check without recording a failure."""
+        with self.transaction() as connection:
+            connection.execute(
+                "UPDATE sources SET next_check_at = ?, last_error_code = ? WHERE id = ?",
+                (next_check_at, reason, source_id),
+            )
 
     def set_source_links(
         self,
@@ -699,6 +775,7 @@ class Repository:
         winner_item_id: int,
         *,
         now: str,
+        source_priorities: Mapping[str, int] | None = None,
     ) -> dict[str, Any] | None:
         with self.transaction() as connection:
             conflict = connection.execute(
@@ -794,11 +871,33 @@ class Repository:
                 else winner["code_status"]
             )
             is_watched = int(bool(winner["is_watched"] or loser["is_watched"]))
+            source_priority = source_priorities or {
+                "arxiv": 100, "hf_paper": 90, "hf_model": 80, "github_repo": 60,
+            }
+            source_rows = connection.execute(
+                """SELECT id, source_type, source_uid, title, description FROM sources
+                   WHERE item_id IN (?, ?)""",
+                (winner_item_id, loser_item_id),
+            ).fetchall()
+            canonical = min(
+                source_rows,
+                key=lambda source: (
+                    -source_priority.get(source["source_type"], 0),
+                    source["source_type"],
+                    source["source_uid"],
+                ),
+            ) if source_rows else None
+            if canonical is not None:
+                if not title_locked:
+                    title = canonical["title"]
+                if not summary_locked:
+                    summary = canonical["description"]
             connection.execute(
                 """
                 UPDATE items SET title = ?, title_locked = ?, summary = ?,
                     summary_locked = ?, category = ?, notes = ?, code_status = ?,
-                    triage_status = ?, is_watched = ?, updated_at = ?, revision = revision + 1
+                    triage_status = ?, is_watched = ?, canonical_source_id = ?,
+                    updated_at = ?, revision = revision + 1
                 WHERE id = ?
                 """,
                 (
@@ -811,6 +910,7 @@ class Repository:
                     code_status,
                     triage_status,
                     is_watched,
+                    int(canonical["id"]) if canonical else None,
                     now,
                     winner_item_id,
                 ),
@@ -990,7 +1090,12 @@ class Repository:
                     feed = excluded.feed,
                     query_json = excluded.query_json,
                     coverage_from = COALESCE(excluded.coverage_from, sync_state.coverage_from),
-                    completed_until = COALESCE(excluded.completed_until, sync_state.completed_until),
+                    completed_until = CASE
+                        WHEN excluded.completed_until IS NULL THEN sync_state.completed_until
+                        WHEN sync_state.completed_until IS NULL
+                             OR excluded.completed_until > sync_state.completed_until
+                        THEN excluded.completed_until
+                        ELSE sync_state.completed_until END,
                     last_attempt_at = excluded.last_attempt_at,
                     last_status = COALESCE(?, sync_state.last_status),
                     last_error = COALESCE(?, sync_state.last_error),
@@ -1173,8 +1278,8 @@ class Repository:
                 SELECT s.*, i.id AS item_id, i.title AS item_title, i.revision
                 FROM sources s JOIN items i ON i.id = s.item_id
                 WHERE i.is_watched = 1
-                  AND (s.last_checked_at IS NULL OR s.last_checked_at <= ?)
-                ORDER BY COALESCE(s.last_checked_at, '') ASC, s.id ASC
+                  AND COALESCE(s.next_check_at, s.last_checked_at, s.last_seen_at) <= ?
+                ORDER BY COALESCE(s.next_check_at, s.last_checked_at, s.last_seen_at), s.id
                 LIMIT ?
                 """,
                 (cutoff, limit),
@@ -1185,3 +1290,145 @@ class Repository:
                 source["item_title"] = source.pop("item_title")
                 result.append(source)
             return result
+
+    def watch_queue_status(self, now: str) -> dict[str, Any]:
+        with self.database.read() as connection:
+            row = connection.execute(
+                """SELECT count(*) AS watched_sources,
+                       sum(CASE WHEN COALESCE(s.next_check_at, s.last_checked_at,
+                           s.last_seen_at) <= ? THEN 1 ELSE 0 END) AS due_count,
+                       sum(CASE WHEN s.consecutive_failures > 0 THEN 1 ELSE 0 END) AS failed_sources,
+                       min(s.next_check_at) AS next_due_at
+                   FROM sources s JOIN items i ON i.id = s.item_id
+                   WHERE i.is_watched = 1""",
+                (now,),
+            ).fetchone()
+            return {
+                "watched_sources": int(row["watched_sources"] or 0),
+                "due_count": int(row["due_count"] or 0),
+                "failed_sources": int(row["failed_sources"] or 0),
+                "next_due_at": row["next_due_at"],
+            }
+
+    def enqueue_sync_segment(
+        self, job_key: str, start: str, end: str, *, page_token: str | None = None,
+        split_depth: int = 0, conn: sqlite3.Connection | None = None,
+    ) -> int:
+        with self._write_connection(conn) as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO sync_segments
+                       (job_key, window_start, window_end, page_token, split_depth)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (job_key, start, end, page_token, split_depth),
+            )
+            row = connection.execute(
+                """SELECT id FROM sync_segments WHERE job_key = ? AND window_start = ?
+                       AND window_end = ?""",
+                (job_key, start, end),
+            ).fetchone()
+            return int(row["id"])
+
+    def list_sync_segments(self, job_key: str) -> list[dict[str, Any]]:
+        with self.database.read() as connection:
+            return [dict(row) for row in connection.execute(
+                """SELECT * FROM sync_segments WHERE job_key = ?
+                   AND status = 'pending'
+                   ORDER BY window_start, window_end, id""",
+                (job_key,),
+            ).fetchall()]
+
+    def list_sync_segment_records(self, job_key: str) -> list[dict[str, Any]]:
+        with self.database.read() as connection:
+            return [dict(row) for row in connection.execute(
+                "SELECT * FROM sync_segments WHERE job_key = ? ORDER BY window_start, window_end, id",
+                (job_key,),
+            ).fetchall()]
+
+    def complete_sync_segment(
+        self, segment_id: int, *, provider_cursor: str | None = None
+    ) -> None:
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT job_key FROM sync_segments WHERE id = ?", (segment_id,)
+            ).fetchone()
+            if row is None:
+                return
+            connection.execute(
+                "UPDATE sync_segments SET status = 'complete', completed_at = ? WHERE id = ?",
+                (datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"), segment_id),
+            )
+            if provider_cursor is not None:
+                connection.execute(
+                    "UPDATE sync_state SET provider_cursor = ? WHERE job_key = ?",
+                    (provider_cursor, row["job_key"]),
+                )
+
+    def delete_sync_segments(
+        self, job_key: str, *, conn: sqlite3.Connection | None = None
+    ) -> None:
+        with self._write_connection(conn) as connection:
+            connection.execute("DELETE FROM sync_segments WHERE job_key = ?", (job_key,))
+
+    def contiguous_sync_coverage(
+        self, job_key: str, start: str, end: str
+    ) -> str | None:
+        with self.database.read() as connection:
+            rows = connection.execute(
+                """SELECT window_start, window_end FROM sync_segments
+                   WHERE job_key = ? AND status = 'complete'
+                     AND window_end > ? AND window_start < ?
+                   ORDER BY window_start, window_end""",
+                (job_key, start, end),
+            ).fetchall()
+        cursor = start
+        for row in rows:
+            segment_start = max(start, row["window_start"])
+            segment_end = min(end, row["window_end"])
+            if segment_start > cursor:
+                break
+            cursor = max(cursor, segment_end)
+            if cursor >= end:
+                return end
+        return cursor if cursor > start else None
+
+    def split_sync_segment(
+        self,
+        segment_id: int,
+        left: tuple[str, str],
+        right: tuple[str, str],
+    ) -> None:
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT job_key, split_depth FROM sync_segments WHERE id = ?", (segment_id,)
+            ).fetchone()
+            if row is None:
+                return
+            connection.execute("DELETE FROM sync_segments WHERE id = ?", (segment_id,))
+            connection.executemany(
+                """INSERT OR IGNORE INTO sync_segments
+                       (job_key, window_start, window_end, split_depth) VALUES (?, ?, ?, ?)""",
+                ((row["job_key"], left[0], left[1], int(row["split_depth"]) + 1),
+                 (row["job_key"], right[0], right[1], int(row["split_depth"]) + 1)),
+            )
+
+    def update_sync_segment_failure(
+        self, segment_id: int, *, now: str, error_code: str, page_token: str | None = None
+    ) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                """UPDATE sync_segments SET attempt_count = attempt_count + 1,
+                       last_error_code = ?, last_attempt_at = ?,
+                       page_token = COALESCE(?, page_token) WHERE id = ?""",
+                (error_code, now, page_token, segment_id),
+            )
+
+    def set_sync_resume(
+        self, job_key: str, *, token: str | None, window: tuple[str, str] | None,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        with self._write_connection(conn) as connection:
+            connection.execute(
+                """UPDATE sync_state SET resume_token = ?, resume_window_start = ?,
+                       resume_window_end = ? WHERE job_key = ?""",
+                (token, window[0] if window else None, window[1] if window else None, job_key),
+            )

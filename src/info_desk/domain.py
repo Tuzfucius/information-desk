@@ -7,8 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-Feed = Literal["arxiv", "hf_papers", "hf_models", "github"]
-SourceType = Literal["arxiv", "hf_paper", "hf_model", "github_repo"]
+Feed = str
+SourceType = str
 TriageStatus = Literal["inbox", "saved", "ignored"]
 CodeStatus = Literal["unknown", "not_detected", "detected"]
 EventType = Literal["discovered", "source_attached", "content_changed", "code_detected"]

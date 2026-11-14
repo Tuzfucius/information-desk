@@ -10,8 +10,12 @@ scheduled_budget_sec = 900
 overlap_hours = 48
 initial_lookback_days = 2
 max_pages_per_window = 20
-watch_refresh_interval_hours = 24
+# Optional global override; omit it to use each adapter's declared Watch interval.
+# watch_refresh_interval_hours = 24
 watch_refresh_limit_per_run = 100
+watch_item_budget_sec = 20
+max_window_splits = 16
+max_segments_per_run = 100
 
 [http]
 connect_timeout_sec = 5

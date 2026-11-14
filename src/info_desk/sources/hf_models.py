@@ -13,6 +13,7 @@ from .base import (
     AdapterError,
     CandidateSource,
     PageResult,
+    SourceCapabilities,
     SourceInspection,
     bounded_get,
     clean_text,
@@ -30,6 +31,11 @@ RESPONSE_LIMIT = 4_000_000
 
 class HuggingFaceModelsAdapter:
     endpoint = "https://huggingface.co/api/models"
+    capabilities = SourceCapabilities(
+        ("hf_model",), discovery_mode="poll", window_resolution_seconds=None,
+        window_filtering="client", durable_cursor=True, watch_interval_hours=12,
+        title_priorities={"hf_model": 80},
+    )
 
     def __init__(self, client: httpx.AsyncClient, page_size: int = 100):
         self.client = client
@@ -114,6 +120,7 @@ class HuggingFaceModelsAdapter:
             page_complete=next_token is None and not incomplete,
             source_response_incomplete=incomplete,
             warnings=warnings,
+            resume_safe=next_token is not None,
         )
 
     async def inspect(self, target: str) -> SourceInspection:

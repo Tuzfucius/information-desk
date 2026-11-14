@@ -1,11 +1,11 @@
 # information-desk 架构与功能设计文档
 
 > **版本**：V1.1（V1.0 信息源治理版的工程修订）  
-> **状态**：设计基线 / 待按验收清单实现  
+> **状态**：领域与协议设计基线；M5 运行实现和实测状态见本文 M5 补充及 [`docs/validation-results.md`](docs/validation-results.md)
 > **修订日期**：2026-11-13  
 > **目标读者**：Python 开发者、MCP 工具开发者、科研情报工作流维护者  
 > **部署定位**：单机、本地优先、可定时运行、可由多个 MCP 客户端查询  
-> **文档性质**：设计规范；其中代码、SQL、JSON 是拟实施契约，不代表已编码或运行通过。
+> **文档性质**：设计规范；原始 SQL 图例展示 V1.1 基础结构，部署 schema 已通过编号迁移演进至 v3。所有已验证与未验证项均以测试验收报告为准。
 
 ## 0. 执行摘要与关键决策
 
@@ -476,7 +476,7 @@ uv run info-desk conflicts dismiss <conflict_id>
 ### 7.2 Sync Job 唯一键与水位线
 
 - `job_key = sha256(feed + canonical_query_json + query_version)`：同一作业有自己的进度。
-- `completed_until`：对指定查询，**已经完整成功扫描到的 UTC 时间上界**，与运行时间不同。
+- `completed_until`：对指定查询，已经完整枚举的连续 UTC 覆盖前缀上界，与运行时间不同。子窗口后段失败时，已完整的连续前缀仍可保留。
 - `last_success_at`：最近一次成功执行该查询的时间，用于运维展示。
 - `overlap_hours`：每次成功后重扫一段重叠窗口（默认建议 48 小时，可配置），抵御 API 索引延迟与临界时间错过。
 - `settle_lag_minutes`：采集上界相对当前时间后移的安全滞后，取值按平台实际特性配置；无充分证据时设为 0 并依赖重叠扫描。
@@ -499,7 +499,7 @@ uv run info-desk conflicts dismiss <conflict_id>
 8. 记录 sync_runs 与 warnings，释放同步锁
 ```
 
-**关键细节**：分页时数据可能新增、排序可能移动。不能假定 `page=3` 是可以长期安全恢复的稳定游标。V1.1 默认在异常后重扫**尚未完成的整个有界时间段**，用幂等写入消除重复。不能仅保存 `page` 并跳过之前页面。对响应结果数量触及平台上限的窗口继续细分；仍无法完整枚举则保留 `partial` 和告警，禁止宣称“已完整采集”。
+**关键细节**：分页时数据可能新增、排序可能移动。不能假定 `page=3` 是可以长期安全恢复的稳定游标。适配器只有在源站 continuation token 可跨运行安全使用时才声明 durable cursor；否则失败后重扫**尚未完成的整个有界时间段**，用幂等写入消除重复。对响应数量触及平台上限的服务器端时间窗口继续无间隙细分；仍无法完整枚举则保留 `partial` 和诊断原因，禁止宣称“已完整采集”。
 
 ### 7.4 首次发现与更新的事件模型
 
@@ -795,7 +795,8 @@ overlap_hours = 48
 initial_lookback_days = 2
 max_pages_per_window = 20
 max_events_per_response = 30
-watch_refresh_interval_hours = 24
+# 可选的全局 Watch 周期覆盖；未设置时使用各适配器声明的默认周期。
+# watch_refresh_interval_hours = 24
 watch_refresh_limit_per_run = 100
 
 [arxiv]
@@ -835,7 +836,7 @@ backup_count = 3
 └── run/
 ```
 
-`max_pages_per_window` 是防滥用阈值，**达到阈值必须标记 `partial`**；不可理解为采集完整的页数。Token 仅从进程环境或密钥管理器注入，配置范例不得要求明文填写 Token。
+`max_pages_per_window` 是单次窗口请求上限；达到阈值会标记 `partial` 并保留子段或已声明安全的游标。窗口细分深度与每轮分段数另设上限。Token 仅从进程环境或密钥管理器注入，配置范例不得要求明文填写 Token。
 
 ### 12.2 定时运行
 
@@ -1021,3 +1022,42 @@ backup_count = 3
 以下默认值是**工程建议，不是源站官方保障**，应按实际网络/API 数据进行调整：`overlap_hours=48`、`watch_refresh_interval_hours=24`、`initial_lookback_days=2`、`max_pages_per_window=20`、`arxiv.page_size=100`、`GitHub.page_size=100`、`README_excerpt=3000–5000 chars`、`HTTP 最大响应=4MB`。核定时必须执行：一天实际数据量抽样、不同页面排序稳定性检查、HF Models 扫描可枚举性评估、最大一次扫描耗时与 API 配额评估。
 
 **设计完成条件**：本文明确了边界、数据契约、表约束、跨源归并、同步水位线、事件消费、API/CLI、失败恢复、安全、部署和验收；开发完成条件以第 14 章的实际测试结果为准。
+
+---
+
+## M5 实施补充：可恢复运行与来源扩展
+
+本节记录 V1.1 之后实际加入的基础设施，不改变 Item/Source/SourceLink/Event 的领域边界。代码与操作契约分别见 [`docs/project-structure.md`](docs/project-structure.md)、[`docs/mcp-interface.md`](docs/mcp-interface.md)、[`docs/operations.md`](docs/operations.md) 和 [`docs/adding-a-source.md`](docs/adding-a-source.md)。
+
+### M5.1 schema v3 与来源注册
+
+- `AdapterRegistry` 显式保存 Feed、适配器实例和 `SourceCapabilities`；不使用动态插件加载。
+- 能力声明包含 Source 类型、发现模式（window/cursor/poll/none）、窗口过滤与分辨率、durable cursor、目标匹配、受允许请求域名、最小请求间隔、标题优先级和 Watch 周期/单项超时。
+- HTTP 请求仍经过 SafeHttpClient。新域名必须由 AdapterRegistry 明确声明，不能通过接受任意 URL 扩展。
+- schema v3 放宽 `sources`、`source_links`、`pending_sources`、`sync_state`、`sync_runs` 的固定 Feed/Source 类型列表约束；新增可查询关系类型和事件类型仍应通过增量迁移。
+- `sync_segments` 保存未完成窗口的恢复 Token、拆分深度、尝试次数、错误和 complete/pending 状态；`sync_state.provider_cursor` 单独保存成功批次的 opaque checkpoint。v1/v2 逐步升级到 v3，不删除已有稳定 ID。
+
+### M5.2 同步活性与覆盖进度
+
+- 窗口型适配器达到页数上限或明确报告结果不完整时，在能力允许范围内按服务器过滤时间切成无间隙子窗口。最大深度和单轮分段数由配置约束。
+- 只有适配器标记 `resume_safe` 且 capability 声明 durable cursor 时，当前 continuation token 才会被持久化供下一次运行使用。offset/page token 默认不能跨越动态结果使用。
+- `next_page_token` 仅用于当前批次的下一页；完整扫描后 `checkpoint_token` 与段完成状态在同一 SQLite 事务更新。声明 durable cursor 却没有给出 checkpoint 的来源保持 `partial`。游标型作业不伪造 `completed_until` 时间水位线，cursor 不回传到 MCP/CLI 状态。
+- 只有 window 模式且使用服务端或客户端时间过滤时才维护 `coverage_from` / `completed_until`；cursor、poll 与无发现能力来源的成功/跳过状态不会被解释为时间完整覆盖。能力不支持发现和预算耗尽的 skipped Job 会持久化，便于状态诊断。
+- 每个完成子段记录在同步事务边界之外独立持久化；失败的兄弟子段不会清除已完成前缀。连续覆盖前缀能推进 `completed_until`，完整窗口完成后清理子段记录。
+- 页面数据提交后、段状态确认前若进程退出，恢复时可能重取该页；Source ID 和 Event key 保证幂等。
+- GitHub Search 结果仍受 1,000 条和 `incomplete_results` 限制。细分后仍不能证明完整时返回 partial 和 `API_COMPLETENESS_UNVERIFIED`/细分诊断，不伪造水位线。
+- 手动与定时作业使用两个稳定命名空间；手动重试可恢复自己的未完成区间，不改变定时作业水位线。
+
+### M5.3 Watch 计划和字段权威
+
+- Source 保存 `next_check_at`、`last_check_success_at`、连续失败数、错误码及可选周期覆盖。成功后按 Adapter policy 排期；全局周期只在显式配置时覆盖。
+- Watch 按到期时间和稳定 Source ID 有界取批，未检查的来源保留到下轮。失败指数退避设上限；Retry-After 也受此上限约束。
+- 关闭 Feed 的发现不会静默取消用户已有 Watch；只要 Adapter 仍注册，Watch 继续检查。Adapter 已移除或不支持 inspect 的来源会显式 `skipped` 并延期，不伪报源站失败。
+- 定时同步获取注册表全部 Feed 锁，再执行 Watch，避免同一进程机器上的定时探查与手动同步碰撞。锁使用非阻塞文件 `flock`，进程级限流仍由 SafeHttpClient 实例管理，不声称跨进程统一配额。
+- Item canonical Source 由来源优先级与稳定类型/Source ID 决定，采集顺序不决定展示值；人工锁字段优先。非 canonical Source 的内容变更仍记录 Source 事实事件。
+
+### M5.4 状态、限制与验收
+
+`get_sync_status`/CLI status 报告 Job 的状态、成功覆盖、最后错误和 pending segment 数；Watch 独立报告 due、failed、skipped 和 next due。运行状态使用 `success`、`partial`、`failed`、`skipped` 区分完整、未完成、失败及未执行工作。
+
+测试只证明离线 fixture、SQLite 和真实 SDK stdio 契约内的行为。MCP 宿主端到端验证、跨日 systemd 长期运行和未知上游 API 的完整枚举保证不因此宣称通过；最新结果、覆盖率、CI、live 冒烟和剩余风险见 `docs/validation-results.md`。

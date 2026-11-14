@@ -30,7 +30,7 @@ def test_cli_initializes_diagnoses_and_serializes_offline_results(tmp_path) -> N
     doctor_data = json.loads(doctor.stdout)
     assert doctor.returncode == 0
     assert doctor_data["ok"] is True
-    assert doctor_data["schema_version"] == 2
+    assert doctor_data["schema_version"] == 3
 
     search = _run(tmp_path / "isolated", "search", "--keyword", "Diffusion Policy")
     assert search.returncode == 0

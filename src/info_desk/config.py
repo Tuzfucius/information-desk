@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -29,17 +30,23 @@ class Settings(BaseModel):
     initial_lookback_days: int = Field(default=2, ge=1, le=14)
     overlap_hours: int = Field(default=48, ge=0, le=720)
     max_pages_per_window: int = Field(default=20, ge=1, le=500)
-    watch_refresh_interval_hours: int = Field(default=24, ge=1, le=8760)
+    watch_refresh_interval_hours: int | None = Field(default=None, ge=1, le=8760)
     watch_refresh_limit_per_run: int = Field(default=100, ge=1, le=10000)
+    watch_item_budget_sec: float = Field(default=20, gt=0, le=300)
+    watch_failure_base_hours: int = Field(default=1, ge=1, le=168)
+    watch_failure_max_hours: int = Field(default=24, ge=1, le=720)
+    sync_max_window_splits: int = Field(default=16, ge=0, le=32)
+    sync_max_segments_per_run: int = Field(default=100, ge=1, le=10000)
     github_token: str | None = None
     hf_token: str | None = None
 
     @field_validator("enabled_feeds")
     @classmethod
     def validate_feeds(cls, value: list[str]) -> list[str]:
-        allowed = {"arxiv", "hf_papers", "hf_models", "github"}
-        if not value or len(value) != len(set(value)) or set(value) - allowed:
-            raise ValueError("feeds must be unique supported feed names")
+        if not value or len(value) != len(set(value)) or any(
+            not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", feed) for feed in value
+        ):
+            raise ValueError("feeds must be unique lowercase adapter identifiers")
         return value
 
     @field_validator("topics")
@@ -90,8 +97,13 @@ def load_settings(config_path: Path | None = None) -> Settings:
         "initial_lookback_days": sync.get("initial_lookback_days", 2),
         "overlap_hours": sync.get("overlap_hours", 48),
         "max_pages_per_window": sync.get("max_pages_per_window", 20),
-        "watch_refresh_interval_hours": sync.get("watch_refresh_interval_hours", 24),
+        "watch_refresh_interval_hours": sync.get("watch_refresh_interval_hours"),
         "watch_refresh_limit_per_run": sync.get("watch_refresh_limit_per_run", 100),
+        "watch_item_budget_sec": sync.get("watch_item_budget_sec", 20),
+        "watch_failure_base_hours": sync.get("watch_failure_base_hours", 1),
+        "watch_failure_max_hours": sync.get("watch_failure_max_hours", 24),
+        "sync_max_window_splits": sync.get("max_window_splits", 16),
+        "sync_max_segments_per_run": sync.get("max_segments_per_run", 100),
         "github_token": os.environ.get("GITHUB_TOKEN"),
         "hf_token": os.environ.get("HF_TOKEN"),
     }

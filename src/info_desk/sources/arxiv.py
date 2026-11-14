@@ -14,6 +14,7 @@ from .base import (
     AdapterError,
     CandidateSource,
     PageResult,
+    SourceCapabilities,
     SourceInspection,
     bounded_get,
     clean_text,
@@ -30,6 +31,8 @@ LINKS = re.compile(r"https?://(?:www\.)?(?:github\.com|huggingface\.co)/[^\s<>\]
 
 class ArxivAdapter:
     endpoint = "https://export.arxiv.org/api/query"
+    capabilities = SourceCapabilities(("arxiv",), window_resolution_seconds=86_400,
+                                      title_priorities={"arxiv": 100})
 
     def __init__(self, client: httpx.AsyncClient, page_size: int = 100):
         self.client = client

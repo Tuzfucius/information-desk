@@ -5,6 +5,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from info_desk.contracts import FetchRequest
+from info_desk.exceptions import ValidationError
 from info_desk.resolver import IdentityResolver
 from info_desk.sources.base import AdapterError, CandidateSource, PageResult
 from info_desk.sync_engine import SyncEngine
@@ -39,6 +40,39 @@ def engine(settings, repository, adapters, resolver=None):
     resolved = resolver or IdentityResolver(repository)
     refresher = WatchRefresher(settings, repository, adapters, resolved)
     return SyncEngine(settings, repository, adapters, resolved, refresher, lambda response: None)
+
+
+async def test_unregistered_feed_is_rejected_before_starting_a_run(settings, repository) -> None:
+    sync = engine(settings, repository, {"arxiv": ScriptedAdapter()})
+
+    try:
+        await sync.run(FetchRequest(feeds=["unregistered"], topics=["VLA"]))
+    except ValidationError as error:
+        assert "Unsupported feeds" in str(error)
+    else:
+        raise AssertionError("unregistered feeds must be rejected")
+
+    assert repository.list_runs(limit=10) == []
+
+
+async def test_budget_exhaustion_returns_skipped_job_without_calling_adapter(
+    settings, repository
+) -> None:
+    settings.refresh_budget_sec = 1
+    adapter = ScriptedAdapter()
+    sync = engine(settings, repository, {"arxiv": adapter})
+    monotonic = iter((0.0, 2.0))
+    sync.monotonic = lambda: next(monotonic)
+
+    result = await sync.run(FetchRequest(feeds=["arxiv"], topics=["VLA"]))
+
+    assert result["status"] == "skipped"
+    assert result["jobs"][0]["status"] == "skipped"
+    assert result["jobs"][0]["error_code"] == "BUDGET_EXHAUSTED"
+    state = repository.get_sync_state(result["jobs"][0]["job_key"])
+    assert state["last_status"] == "skipped"
+    assert state["last_error"] == "BUDGET_EXHAUSTED"
+    assert adapter.windows == []
 
 
 async def test_first_success_sets_success_time_and_completed_waterline(settings, repository) -> None:

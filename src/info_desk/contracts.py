@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Literal
 
@@ -21,7 +22,9 @@ class SearchRequest(StrictModel):
     triage_status: Literal["inbox", "saved", "ignored"] | None = None
     is_watched: bool | None = None
     code_status: Literal["unknown", "not_detected", "detected"] | None = None
-    source_type: Literal["arxiv", "hf_paper", "hf_model", "github_repo"] | None = None
+    source_type: str | None = Field(
+        default=None, min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$"
+    )
     published_from: datetime | None = None
     published_before: datetime | None = None
     first_seen_after: datetime | None = None
@@ -92,7 +95,10 @@ class StatusRequest(StrictModel):
     @field_validator("feeds")
     @classmethod
     def validate_feeds(cls, value: list[Feed] | None) -> list[Feed] | None:
-        if value is not None and (not value or len(value) != len(set(value))):
+        if value is not None and (
+            not value or len(value) != len(set(value))
+            or any(not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", feed) for feed in value)
+        ):
             raise ValueError("feeds must contain unique values")
         return value
 
@@ -191,16 +197,22 @@ class SyncJobStatus(BaseModel):
     completed_until: datetime | None = None
     last_attempt_at: datetime | None = None
     last_success_at: datetime | None = None
-    last_status: Literal["never", "running", "success", "partial", "failed"]
+    last_status: Literal["never", "running", "success", "partial", "failed", "skipped"]
     last_error_code: str | None = None
+    pending_segments: int = 0
 
 
 class WatchRefreshStatus(BaseModel):
     last_attempt_at: datetime | None = None
-    last_status: Literal["never", "running", "success", "partial", "failed"]
+    last_status: Literal["never", "running", "success", "partial", "failed", "skipped"]
     checked: int | None = None
     failed: int | None = None
+    skipped: int = 0
     pending_due: bool
+    due_count: int = 0
+    watched_sources: int = 0
+    failed_sources: int = 0
+    next_due_at: datetime | None = None
 
 
 class StatusData(BaseModel):
@@ -216,7 +228,7 @@ class StatusResponse(BaseModel):
 
 
 class InspectSource(BaseModel):
-    source_type: Literal["arxiv", "hf_paper", "hf_model", "github_repo"]
+    source_type: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
     source_uid: str
     external_id: str
     url: str
@@ -280,7 +292,7 @@ class FetchJob(BaseModel):
     window_start: datetime
     window_end: datetime
     completed_until: datetime | None = None
-    status: Literal["success", "partial", "failed"]
+    status: Literal["success", "partial", "failed", "skipped"]
     error_code: str | None = None
     retry_after_seconds: float | None = None
     query: dict[str, object] | None = None
@@ -299,7 +311,7 @@ class FetchData(BaseModel):
     run_id: int
     started_at: datetime
     finished_at: datetime
-    status: Literal["success", "partial", "failed"]
+    status: Literal["success", "partial", "failed", "skipped"]
     jobs: list[FetchJob]
     stats: FetchStats
     events_preview: list[EventView]

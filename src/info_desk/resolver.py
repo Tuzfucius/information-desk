@@ -26,8 +26,13 @@ class IngestResult:
 
 
 class IdentityResolver:
-    def __init__(self, repository: Repository) -> None:
+    def __init__(
+        self, repository: Repository, source_priorities: dict[str, int] | None = None
+    ) -> None:
         self.repository = repository
+        self.source_priorities = source_priorities or {
+            "arxiv": 100, "hf_paper": 90, "hf_model": 80, "github_repo": 60,
+        }
 
     def ingest_candidate(
         self,
@@ -192,12 +197,22 @@ class IdentityResolver:
                 conn=conn,
             )
             conflict_count += 1
+        candidates = self.repository.sources_for_item(item_id, conn=conn)
+        canonical = min(
+            candidates,
+            key=lambda source: (
+                -self.source_priorities.get(source["source_type"], 0),
+                source["source_type"],
+                source["source_uid"],
+            ),
+        ) if candidates else None
         previous_item = self.repository.get_item(item_id, conn=conn)
         self.repository.set_item_automatic_fields(
             item_id,
             now=now,
-            title=candidate.title,
-            summary=candidate.description,
+            title=canonical["title"] if canonical else candidate.title,
+            summary=canonical["description"] if canonical else candidate.description,
+            canonical_source_id=int(canonical["id"]) if canonical else None,
             code_status=(
                 "detected"
                 if candidate.source_type == "github_repo"
@@ -268,43 +283,53 @@ class IdentityResolver:
     def normalized_links(candidate: CandidateSource) -> list[dict[str, Any]]:
         links = []
         for entry in candidate.extracted_links:
-            url = entry.get("url")
-            if not isinstance(url, str):
-                continue
-            parsed = urlparse(url)
-            source_type = None
-            external_id = None
-            if parsed.hostname == "github.com":
-                parts = [part for part in parsed.path.strip("/").split("/") if part]
-                if len(parts) >= 2:
-                    source_type = "github_repo"
-                    external_id = "/".join(parts[:2]).removesuffix(".git")
-            elif parsed.hostname == "huggingface.co":
-                parts = [part for part in parsed.path.strip("/").split("/") if part]
-                if len(parts) == 2 and parts[0] == "papers":
-                    match = re.fullmatch(
-                        r"((?:\d{4}\.\d{4,5}|[a-z-]+/\d{7}))(?:v\d+)?",
-                        parts[1],
-                        re.IGNORECASE,
+            url = entry.get("url") or entry.get("target_url")
+            source_type = entry.get("target_source_type")
+            external_id = entry.get("target_external_id")
+            if not (
+                isinstance(source_type, str)
+                and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", source_type)
+                and isinstance(external_id, str)
+                and external_id.strip()
+            ):
+                if not isinstance(url, str):
+                    continue
+                parsed = urlparse(url)
+                source_type = None
+                external_id = None
+                if parsed.hostname == "github.com":
+                    parts = [part for part in parsed.path.strip("/").split("/") if part]
+                    if len(parts) >= 2:
+                        source_type = "github_repo"
+                        external_id = "/".join(parts[:2]).removesuffix(".git")
+                elif parsed.hostname == "huggingface.co":
+                    parts = [part for part in parsed.path.strip("/").split("/") if part]
+                    if len(parts) == 2 and parts[0] == "papers":
+                        match = re.fullmatch(
+                            r"((?:\d{4}\.\d{4,5}|[a-z-]+/\d{7}))(?:v\d+)?",
+                            parts[1],
+                            re.IGNORECASE,
+                        )
+                        if match:
+                            source_type = "hf_paper"
+                            external_id = match.group(1).lower()
+                    elif len(parts) == 2 and parts[0] not in {"datasets", "spaces"}:
+                        source_type = "hf_model"
+                        external_id = "/".join(parts)
+                elif parsed.hostname in {"arxiv.org", "export.arxiv.org"}:
+                    match = re.search(
+                        r"(\d{4}\.\d{4,5}|[a-z-]+/\d{7})", parsed.path, re.IGNORECASE
                     )
                     if match:
-                        source_type = "hf_paper"
+                        source_type = "arxiv"
                         external_id = match.group(1).lower()
-                elif len(parts) == 2 and parts[0] not in {"datasets", "spaces"}:
-                    source_type = "hf_model"
-                    external_id = "/".join(parts)
-            elif parsed.hostname in {"arxiv.org", "export.arxiv.org"}:
-                match = re.search(r"(\d{4}\.\d{4,5}|[a-z-]+/\d{7})", parsed.path, re.IGNORECASE)
-                if match:
-                    source_type = "arxiv"
-                    external_id = match.group(1).lower()
             if not source_type or not external_id:
                 continue
             links.append(
                 {
                     "target_source_type": source_type,
                     "target_external_id": external_id,
-                    "target_url": url,
+                    "target_url": url if isinstance(url, str) else "",
                     "relation_type": entry.get("relation_type", "related"),
                     "evidence_level": entry.get("evidence_level", "weak"),
                     "evidence_origin": entry.get("evidence_origin", candidate.source_type),

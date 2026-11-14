@@ -67,12 +67,12 @@ jobs:
       - name: Verify packaged SQL and installed CLI
         shell: bash
         run: |
-          .wheel-venv/bin/python -c 'from importlib.resources import files; root = files("info_desk.storage").joinpath("sql"); assert root.joinpath("001_initial.sql").is_file(); assert root.joinpath("002_reliability.sql").is_file()'
+          .wheel-venv/bin/python -c 'from importlib.resources import files; root = files("info_desk.storage").joinpath("sql"); assert all(root.joinpath(name).is_file() for name in ("001_initial.sql", "002_reliability.sql", "003_m5_runtime.sql"))'
           smoke_dir="$(mktemp -d)"
           cd "$smoke_dir"
           INFO_DESK_HOME="$smoke_dir/home" "$GITHUB_WORKSPACE/.wheel-venv/bin/info-desk" init
           INFO_DESK_HOME="$smoke_dir/home" "$GITHUB_WORKSPACE/.wheel-venv/bin/info-desk" doctor > doctor.json
-          python -c 'import json; result=json.load(open("doctor.json", encoding="utf-8")); assert result["ok"] is True; assert result["schema_version"] == 2'
+          python -c 'import json; result=json.load(open("doctor.json", encoding="utf-8")); assert result["ok"] is True; assert result["schema_version"] == 3'
 
   live-smoke:
     name: Bounded live source smoke

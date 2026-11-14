@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import replace
+
+import pytest
 
 from info_desk.resolver import IdentityResolver
 from info_desk.sources.base import CandidateSource
@@ -138,3 +141,39 @@ def test_event_source_snapshot_survives_github_rename_and_consumer_cursors(repos
     assert consumer_a["events"][0]["source"]["external_id"] == "old/name"
     assert consumer_a["events"][0]["source"]["url"] == "https://github.com/old/name"
     assert repository.get_source("github_repo", "778")["external_id"] == "new/name"
+
+
+def test_sync_coverage_advances_only_through_a_contiguous_complete_prefix(repository) -> None:
+    job_key = "coverage-prefix"
+    start = "2026-01-01T00:00:00Z"
+    split = "2026-01-02T00:00:00Z"
+    end = "2026-01-03T00:00:00Z"
+    left_id = repository.enqueue_sync_segment(job_key, start, split)
+    repository.enqueue_sync_segment(job_key, split, end)
+    repository.complete_sync_segment(left_id)
+
+    assert repository.contiguous_sync_coverage(job_key, start, end) == split
+
+    right_id = repository.list_sync_segments(job_key)[0]["id"]
+    repository.complete_sync_segment(right_id)
+    assert repository.contiguous_sync_coverage(job_key, start, end) == end
+
+
+def test_provider_cursor_and_segment_completion_share_one_transaction(repository) -> None:
+    job_key = "cursor-atomicity"
+    repository.upsert_sync_state(job_key, "cursor_feed", {}, now="2026-01-01T00:00:00Z")
+    segment_id = repository.enqueue_sync_segment(
+        job_key, "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z"
+    )
+    with repository.transaction() as connection:
+        connection.execute(
+            """CREATE TRIGGER reject_segment_completion
+               BEFORE UPDATE OF status ON sync_segments
+               BEGIN SELECT RAISE(ABORT, 'injected completion failure'); END"""
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected completion failure"):
+        repository.complete_sync_segment(segment_id, provider_cursor="opaque-cursor")
+
+    assert repository.get_sync_state(job_key)["provider_cursor"] is None
+    assert repository.list_sync_segments(job_key)[0]["id"] == segment_id

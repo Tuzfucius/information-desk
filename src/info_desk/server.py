@@ -110,7 +110,7 @@ def create_server(service: Any, *, profile: str = "read-only") -> MCPServer:
         triage_status: Literal["inbox", "saved", "ignored"] | None = None,
         is_watched: bool | None = None,
         code_status: Literal["unknown", "not_detected", "detected"] | None = None,
-        source_type: Literal["arxiv", "hf_paper", "hf_model", "github_repo"] | None = None,
+        source_type: Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")] | None = None,
         published_from: datetime | None = None,
         published_before: datetime | None = None,
         first_seen_after: datetime | None = None,
@@ -166,7 +166,7 @@ def create_server(service: Any, *, profile: str = "read-only") -> MCPServer:
 
     @server.tool()
     async def get_sync_status(
-        feeds: list[Literal["arxiv", "hf_papers", "hf_models", "github"]] | None = None,
+        feeds: list[Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")]] | None = None,
     ) -> StatusResponse:
         """Read local synchronization coverage and recent run status."""
         return await response_for(
@@ -214,7 +214,7 @@ def create_server(service: Any, *, profile: str = "read-only") -> MCPServer:
         @server.tool()
         async def fetch_updates(
             days: Annotated[int, Field(ge=1, le=14)] = 2,
-            feeds: list[Literal["arxiv", "hf_papers", "hf_models", "github"]] | None = None,
+            feeds: list[Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")]] | None = None,
             topics: list[Annotated[str, Field(min_length=1, max_length=100)]] | None = None,
             limit: Annotated[int, Field(ge=1, le=100)] = 30,
         ) -> FetchResponse:

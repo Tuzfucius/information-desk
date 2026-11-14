@@ -27,7 +27,7 @@ def test_cli_direct_init_doctor_status_and_backup(monkeypatch, capsys, tmp_path)
     assert _invoke(monkeypatch, capsys, home, "init")["ok"] is True
     doctor = _invoke(monkeypatch, capsys, home, "doctor")
     assert doctor["ok"] is True
-    assert doctor["schema_version"] == 2
+    assert doctor["schema_version"] == 3
     assert doctor["checks"]["integrity"]["result"] == "ok"
     assert doctor["checks"]["foreign_keys"]["violations"] == 0
     assert doctor["checks"]["home_permissions"]["mode"] == "0o700"

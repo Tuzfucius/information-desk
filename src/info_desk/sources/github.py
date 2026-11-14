@@ -15,6 +15,7 @@ from .base import (
     AdapterError,
     CandidateSource,
     PageResult,
+    SourceCapabilities,
     SourceInspection,
     bounded_get,
     clean_text,
@@ -50,6 +51,10 @@ LINK_RE = re.compile(r"https?://(?:arxiv\.org|huggingface\.co|github\.com)/[^\s<
 
 
 class GitHubAdapter:
+    capabilities = SourceCapabilities(("github_repo",), window_resolution_seconds=1,
+                                      watch_interval_hours=6,
+                                      title_priorities={"github_repo": 60})
+
     def __init__(
         self,
         client: httpx.AsyncClient,

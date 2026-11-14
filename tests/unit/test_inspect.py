@@ -21,10 +21,16 @@ class Adapter:
         return self.result
 
 
-def _inspection(excerpt=None):
+def _inspection(
+    excerpt=None,
+    *,
+    source_type="arxiv",
+    source_uid="2401.00001",
+    url="https://arxiv.org/abs/2401.00001",
+):
     source = CandidateSource(
-        source_type="arxiv", source_uid="2401.00001", external_id="2401.00001",
-        url="https://arxiv.org/abs/2401.00001", title="Paper", description="Abstract",
+        source_type=source_type, source_uid=source_uid, external_id=source_uid,
+        url=url, title="Paper", description="Abstract",
     )
     return SourceInspection(source=source, checked_at="2026-01-01T00:00:00Z", content_excerpt=excerpt)
 
@@ -32,9 +38,18 @@ def _inspection(excerpt=None):
 @pytest.mark.asyncio
 async def test_inspector_routes_supported_targets_and_returns_source_contract() -> None:
     arxiv = Adapter(_inspection())
-    github = Adapter(_inspection())
-    hf_papers = Adapter(_inspection())
-    hf_models = Adapter(_inspection())
+    github = Adapter(_inspection(
+        source_type="github_repo", source_uid="org/repo",
+        url="https://github.com/org/repo",
+    ))
+    hf_papers = Adapter(_inspection(
+        source_type="hf_paper", source_uid="2401.00001",
+        url="https://huggingface.co/papers/2401.00001",
+    ))
+    hf_models = Adapter(_inspection(
+        source_type="hf_model", source_uid="org/model",
+        url="https://huggingface.co/org/model",
+    ))
     inspector = SourceInspector(
         {"arxiv": arxiv, "github": github, "hf_papers": hf_papers, "hf_models": hf_models},
         lambda response: UpstreamError("UPSTREAM_UNAVAILABLE", str(response.status_code)),

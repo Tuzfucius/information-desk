@@ -307,6 +307,36 @@ def test_operator_resolves_compatible_existing_item_conflict_without_losing_sour
     assert resolved_conflict["resolved_item_id"] == paper.item_id
 
 
+def test_merge_reselects_canonical_source_when_winner_is_lower_priority(repository) -> None:
+    paper = ingest(repository, candidate(
+        "arxiv", "2601.00100", title="Canonical paper", links=None
+    ))
+    repo = ingest(repository, candidate(
+        "github_repo", "1100", external_id="org/project", title="org/project"
+    ))
+    resolver = IdentityResolver(repository)
+    conflict_id = repository.add_merge_conflict(
+        repo.item_id, paper.item_id, {"reason": "reviewed identity"},
+        created_at="2026-01-02T00:00:00Z",
+    )
+
+    merged = repository.resolve_merge_conflict(
+        conflict_id, repo.item_id, now="2026-01-03T00:00:00Z",
+        source_priorities=resolver.source_priorities,
+    )
+
+    assert merged["title"] == "Canonical paper"
+    assert merged["summary"] == "Summary 2601.00100"
+    with repository.database.read() as connection:
+        canonical_id = connection.execute(
+            "SELECT canonical_source_id FROM items WHERE id = ?", (repo.item_id,)
+        ).fetchone()[0]
+        canonical = connection.execute(
+            "SELECT source_type, source_uid FROM sources WHERE id = ?", (canonical_id,)
+        ).fetchone()
+    assert tuple(canonical) == ("arxiv", "2601.00100")
+
+
 def test_pending_resolution_rejects_unknown_resolved_and_unmatched_candidates(repository) -> None:
     match = ingest(repository, candidate("arxiv", "2601.00010"))
     resolver = IdentityResolver(repository)
@@ -359,6 +389,14 @@ def test_normalized_links_accept_only_supported_identity_paths(repository) -> No
             {"url": "https://example.com/not-a-source"},
             {"evidence_level": "strong"},
             {"url": "https://arxiv.org/abs/not-an-id"},
+            {
+                "target_source_type": "release_notice",
+                "target_external_id": "project/build-7",
+                "target_url": "https://releases.example.test/project/build-7",
+                "relation_type": "references",
+                "evidence_level": "supporting",
+                "evidence_origin": "release_api",
+            },
         ],
     )
     normalized = IdentityResolver.normalized_links(linked)
@@ -367,4 +405,5 @@ def test_normalized_links_accept_only_supported_identity_paths(repository) -> No
         ("hf_paper", "2401.00012"),
         ("hf_model", "org/model"),
         ("arxiv", "hep-th/9901001"),
+        ("release_notice", "project/build-7"),
     ]

@@ -146,6 +146,15 @@ def test_service_events_and_status_allow_independent_consumer_cursors(repository
         status = service.get_sync_status(StatusRequest(feeds=["arxiv", "github"]))
         assert [job["last_status"] for job in status["jobs"]] == ["never", "never"]
         assert status["watch_refresh"]["pending_due"] is False
+        repository.upsert_sync_state(
+            "retired-job", "retired_feed", {"topic": "old"},
+            now="2026-01-02T00:00:00Z", last_status="partial",
+            last_error="PAGE_LIMIT",
+        )
+        all_status = service.get_sync_status(StatusRequest())
+        retired = next(job for job in all_status["jobs"] if job["feed"] == "retired_feed")
+        assert retired["last_status"] == "partial"
+        assert retired["last_error_code"] == "PAGE_LIMIT"
     finally:
         import asyncio
 

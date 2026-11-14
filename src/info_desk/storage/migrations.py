@@ -4,7 +4,7 @@ import json
 import sqlite3
 from importlib.resources import files
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class SchemaMismatchError(RuntimeError):
@@ -15,6 +15,7 @@ def migrate(connection: sqlite3.Connection) -> None:
     """Apply the schema while holding SQLite's write lock."""
     connection.execute("BEGIN IMMEDIATE")
     try:
+        connection.execute("PRAGMA defer_foreign_keys = ON")
         current = int(connection.execute("PRAGMA user_version").fetchone()[0])
         if current > SCHEMA_VERSION:
             raise SchemaMismatchError(
@@ -33,6 +34,12 @@ def migrate(connection: sqlite3.Connection) -> None:
             _execute_script(connection, sql)
             _snapshot_existing_events(connection)
             current = 2
+        if current == 2:
+            sql = files("info_desk.storage").joinpath("sql/003_m5_runtime.sql").read_text(
+                encoding="utf-8"
+            )
+            _execute_script(connection, sql)
+            current = 3
         if current != SCHEMA_VERSION:
             raise SchemaMismatchError(f"No migration path from schema {current}")
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

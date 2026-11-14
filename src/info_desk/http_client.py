@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -39,6 +40,8 @@ class SafeHttpClient:
         self.max_retries = max_retries
         self.clock = clock
         self.sleep = sleep
+        self._allowed_hosts = set(ALLOWED_HOSTS)
+        self._source_intervals: dict[str, float] = {}
         self._last_request: dict[str, float] = {}
         self._host_locks: dict[str, asyncio.Lock] = {}
         self.client = httpx.AsyncClient(
@@ -81,10 +84,40 @@ class SafeHttpClient:
     def _request_interval(self, host: str, url: str) -> float:
         path = urlsplit(url).path
         if host == "export.arxiv.org":
-            return 3.0
-        if host == "api.github.com" and path.startswith("/search/"):
-            return 2.1 if self.tokens.get(host) else 6.1
-        return 0.1
+            baseline = 3.0
+        elif host == "api.github.com" and path.startswith("/search/"):
+            baseline = 2.1 if self.tokens.get(host) else 6.1
+        else:
+            baseline = 0.1
+        return max(baseline, self._source_intervals.get(host, 0.0))
+
+    def register_source_policy(
+        self, *, request_hosts: tuple[str, ...], min_interval_seconds: float
+    ) -> None:
+        """Explicitly allow and rate-bound hosts declared by a registered adapter."""
+        if min_interval_seconds < 0 or not math.isfinite(min_interval_seconds):
+            raise ValueError("minimum request interval must be finite and nonnegative")
+        for host in request_hosts:
+            normalized = host.lower()
+            labels = host.split(".")
+            if (
+                normalized != host
+                or not host.isascii()
+                or any(
+                    not label
+                    or len(label) > 63
+                    or not label[0].isalnum()
+                    or not label[-1].isalnum()
+                    or any(not (char.isalnum() or char == "-") for char in label)
+                    for label in labels
+                )
+                or len(host) > 253
+            ):
+                raise ValueError("request host must be a lowercase ASCII DNS name")
+            self._allowed_hosts.add(host)
+            self._source_intervals[host] = max(
+                self._source_intervals.get(host, 0.0), min_interval_seconds
+            )
 
     async def get(self, url: str, **kwargs: object) -> httpx.Response:
         """GET through the same rate, retry, redirect, and body-size policy as adapters."""
@@ -134,8 +167,7 @@ class SafeHttpClient:
                 request_kwargs.pop("headers", None)
         raise InfoDeskError("INVALID_TARGET", "The source redirected too many times.")
 
-    @staticmethod
-    def _validate_url(url: str) -> None:
+    def _validate_url(self, url: str) -> None:
         parsed = urlsplit(url)
         try:
             port = parsed.port
@@ -146,7 +178,7 @@ class SafeHttpClient:
             ) from error
         if (
             parsed.scheme != "https"
-            or parsed.hostname not in ALLOWED_HOSTS
+            or parsed.hostname not in self._allowed_hosts
             or parsed.username
             or parsed.password
             or port not in (None, 443)

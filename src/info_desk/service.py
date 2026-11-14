@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -28,11 +28,8 @@ from info_desk.exceptions import (
 )
 from info_desk.inspect import SourceInspector
 from info_desk.resolver import IdentityResolver
-from info_desk.sources.arxiv import ArxivAdapter
 from info_desk.sources.base import CandidateSource
-from info_desk.sources.github import GitHubAdapter
-from info_desk.sources.hf_models import HuggingFaceModelsAdapter
-from info_desk.sources.hf_papers import HuggingFacePapersAdapter
+from info_desk.sources.registry import AdapterRegistry, create_default_registry
 from info_desk.storage.repository import Repository
 from info_desk.sync_engine import SyncEngine
 from info_desk.watch_refresh import WatchRefresher
@@ -44,19 +41,29 @@ class InformationService:
         settings: Settings,
         repository: Repository,
         http_client: Any,
+        adapters: AdapterRegistry | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
-        self.resolver = IdentityResolver(repository)
         self.http_client = http_client
-        self.adapters = {
-            "arxiv": ArxivAdapter(http_client),
-            "hf_papers": HuggingFacePapersAdapter(http_client),
-            "hf_models": HuggingFaceModelsAdapter(http_client),
-            "github": GitHubAdapter(http_client, token=settings.github_token),
+        self.adapters = adapters or create_default_registry(http_client, settings.github_token)
+        register_policy = getattr(http_client, "register_source_policy", None)
+        if register_policy is not None:
+            for feed in self.adapters:
+                capabilities = self.adapters.capabilities(feed)
+                register_policy(
+                    request_hosts=capabilities.request_hosts,
+                    min_interval_seconds=capabilities.min_request_interval_seconds,
+                )
+        priorities = {
+            source_type: priority
+            for feed in self.adapters
+            for source_type, priority in self.adapters.capabilities(feed).title_priorities.items()
         }
+        self.resolver = IdentityResolver(repository, priorities)
         self.watch_refresher = WatchRefresher(
-            settings, repository, self.adapters, self.resolver
+            settings, repository, self.adapters, self.resolver,
+            upstream_error=self._upstream_error,
         )
         self.source_inspector = SourceInspector(self.adapters, self._upstream_error)
         self.sync_engine = SyncEngine(
@@ -119,8 +126,14 @@ class InformationService:
         }
 
     def get_sync_status(self, request: StatusRequest) -> dict[str, Any]:
-        feeds = request.feeds or self.settings.enabled_feeds
+        feeds = request.feeds
         states = self.repository.list_sync_states(feeds=feeds)
+        if feeds is None:
+            feeds = sorted(
+                set(self.settings.enabled_feeds)
+                | set(self.adapters)
+                | {state["feed"] for state in states}
+            )
         jobs = []
         for state in states:
             latest_run = self.repository.list_runs(job_key=state["job_key"], limit=1)
@@ -140,6 +153,9 @@ class InformationService:
                     "last_success_at": state["last_success_at"],
                     "last_status": status,
                     "last_error_code": state["last_error"] or None,
+                    "pending_segments": len(
+                        self.repository.list_sync_segments(state["job_key"])
+                    ),
                 }
             )
         represented = {state["feed"] for state in states}
@@ -154,17 +170,15 @@ class InformationService:
                 "last_success_at": None,
                 "last_status": "never",
                 "last_error_code": None,
+                "pending_segments": 0,
             }
             for feed in feeds
             if feed not in represented
         )
         watch_runs = self.repository.list_runs(job_key="watch_refresh", limit=1)
         latest_watch = watch_runs[0] if watch_runs else None
-        cutoff = self._iso(
-            datetime.now(UTC)
-            - timedelta(hours=self.settings.watch_refresh_interval_hours)
-        )
-        pending_due = bool(self.repository.list_due_watched(cutoff, limit=1))
+        watch_queue = self.repository.watch_queue_status(self._now())
+        pending_due = watch_queue["due_count"] > 0
         return {
             "jobs": jobs,
             "watch_refresh": {
@@ -176,7 +190,16 @@ class InformationService:
                     if latest_watch and latest_watch["warnings"]
                     else (0 if latest_watch else None)
                 ),
+                "skipped": (
+                    latest_watch["warnings"][0].get("skipped", 0)
+                    if latest_watch and latest_watch["warnings"]
+                    else 0
+                ),
                 "pending_due": pending_due,
+                "due_count": watch_queue["due_count"],
+                "watched_sources": watch_queue["watched_sources"],
+                "failed_sources": watch_queue["failed_sources"],
+                "next_due_at": watch_queue["next_due_at"],
             },
         }
 
@@ -297,15 +320,18 @@ class InformationService:
         )
         return await self.sync_engine.run(request, scheduled=True)
 
-    @staticmethod
-    def _candidate_from_inspection(data: dict[str, Any]) -> CandidateSource:
+    def _candidate_from_inspection(self, data: dict[str, Any]) -> CandidateSource:
         source = data["source"]
+        feed = self.adapters.feed_for_source_type(source["source_type"])
+        capabilities = self.adapters.capabilities(feed) if feed else None
         metadata = dict(source.get("metadata", {}))
         if source["source_type"] == "github_repo":
             metadata["code_status"] = data.get("code_status", "unknown")
             metadata["code_signals"] = data.get("signals", [])
         return CandidateSource(
             source_type=source["source_type"],
+            feed=feed,
+            watch_interval_hours=(capabilities.watch_interval_hours if capabilities else None),
             source_uid=source["source_uid"],
             external_id=source["external_id"],
             url=source["url"],

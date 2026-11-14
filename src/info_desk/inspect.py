@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 
 from info_desk.exceptions import InfoDeskError, UpstreamError
 from info_desk.sources.base import AdapterError
+from info_desk.sources.registry import AdapterRegistry
 
 
 class SourceInspector:
-    def __init__(self, adapters: dict[str, Any], upstream_error: Any) -> None:
-        self.adapters = adapters
+    def __init__(self, adapters: dict[str, Any] | AdapterRegistry, upstream_error: Any) -> None:
+        self.adapters = adapters if isinstance(adapters, AdapterRegistry) else AdapterRegistry.from_mapping(adapters)
         self.upstream_error = upstream_error
 
     async def inspect(self, target: str) -> dict[str, Any]:
@@ -30,6 +30,19 @@ class SourceInspector:
             raise UpstreamError(
                 "UPSTREAM_UNAVAILABLE", "The source request failed."
             ) from error
+
+        feed = next(
+            feed for feed in self.adapters
+            if self.adapters[feed] is adapter
+        )
+        inspection.source.feed = feed
+        if inspection.source.source_type not in self.adapters.capabilities(feed).source_types:
+            raise InfoDeskError(
+                "INTERNAL_ERROR", "Source adapter returned an undeclared source type."
+            )
+        inspection.source.watch_interval_hours = self.adapters.capabilities(
+            feed
+        ).watch_interval_hours
 
         result = inspection.to_dict()
         candidate = result.pop("source")
@@ -62,18 +75,12 @@ class SourceInspector:
         return result
 
     def _adapter_for_target(self, target: str) -> Any:
-        raw = target if "://" in target else f"https://arxiv.org/abs/{target}"
-        parsed = urlparse(raw)
-        host = parsed.hostname
-        path = parsed.path.strip("/")
-        if host in {"arxiv.org", "export.arxiv.org"}:
-            return self.adapters["arxiv"]
-        if host in {"github.com", "www.github.com"}:
-            return self.adapters["github"]
-        if host == "huggingface.co":
-            if path.startswith("papers/"):
-                return self.adapters["hf_papers"]
-            parts = path.split("/")
-            if len(parts) == 2 and parts[0] not in {"datasets", "spaces", "collections"}:
-                return self.adapters["hf_models"]
+        for feed in self.adapters:
+            capabilities = self.adapters.capabilities(feed)
+            if (
+                capabilities.supports_inspect
+                and capabilities.target_matcher is not None
+                and capabilities.target_matcher(target)
+            ):
+                return self.adapters[feed]
         raise InfoDeskError("UNSUPPORTED_SOURCE", "Target is not a supported source URL or ID.")

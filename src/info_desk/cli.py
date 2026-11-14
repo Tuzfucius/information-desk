@@ -290,6 +290,7 @@ def main() -> None:
                         args.conflict_id,
                         args.winner,
                         now=_now(),
+                        source_priorities=service.resolver.source_priorities,
                     )
                 except ValueError as error:
                     raise SystemExit(str(error)) from error

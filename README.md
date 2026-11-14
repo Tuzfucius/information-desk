@@ -2,7 +2,7 @@
 
 A local-first research and open-source intelligence service for AI agents. The service collects records from arXiv, Hugging Face and GitHub, stores them in SQLite, and exposes query and curation tools over MCP.
 
-The V1.1 implementation has an offline regression suite and a bounded live smoke check for all four source APIs. MCP has been exercised with the installed Python SDK over a real stdio subprocess. Integration with a named end-user MCP host has not been verified.
+The M5 implementation adds persistent resumable scan segments, separate durable cursor checkpoints, fair Watch scheduling with bounded backoff, deterministic canonical source fields, and an explicit Source Adapter registry. The offline suite and a bounded live smoke check cover the four current APIs. MCP has been exercised with the installed Python SDK over a real stdio subprocess; integration with a named end-user MCP host and cross-day systemd operation have not been verified.
 
 ## Development
 
@@ -28,7 +28,7 @@ uv run --locked pytest -p pytest_asyncio.plugin -p pytest_cov.plugin \
 
 For a deliberately bounded public API smoke check, run `INFO_DESK_LIVE=1 uv run --locked pytest -m live`. It makes one page request per source and does not open a database. The A01–A12 evidence and limitations are recorded in [the validation report](docs/validation-results.md).
 
-Release checks still open: no named MCP host has been configured for end-to-end interoperability, and branch coverage for `storage/repository.py` and `sync_engine.py` is below the roughly 90% target. The current line-coverage gate is 80%; see the validation report before using this as a production deployment sign-off.
+See [M5 validation results](docs/validation-results.md) for the current test matrix and unresolved release checks. Follow [adding a source](docs/adding-a-source.md) to add a Feed without changing the sync engine or storage core.
 
 Set `INFO_DESK_HOME` to choose the data directory. GitHub and Hugging Face tokens are read from `GITHUB_TOKEN` and `HF_TOKEN`.
 
@@ -37,3 +37,5 @@ Set `INFO_DESK_HOME` to choose the data directory. GitHub and Hugging Face token
 - [Architecture baseline](information-desk-architecture-v1.1.md)
 - [MCP interface](docs/mcp-interface.md)
 - [Project structure](docs/project-structure.md)
+- [Adding a source](docs/adding-a-source.md)
+- [Operations](docs/operations.md)

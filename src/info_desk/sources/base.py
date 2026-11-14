@@ -6,10 +6,11 @@ import asyncio
 import random
 import re
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import httpx
 
@@ -22,6 +23,8 @@ class CandidateSource:
     url: str
     title: str
     description: str = ""
+    feed: str | None = None
+    watch_interval_hours: int | None = None
     published_at: str | None = None
     source_updated_at: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -38,6 +41,8 @@ class PageResult:
     page_complete: bool = True
     source_response_incomplete: bool = False
     warnings: list[str] = field(default_factory=list)
+    resume_safe: bool = False
+    checkpoint_token: str | None = None
 
 
 @dataclass(slots=True)
@@ -58,7 +63,35 @@ class SourceInspection:
         return result
 
 
+@dataclass(frozen=True, slots=True)
+class SourceCapabilities:
+    """Scheduling and discovery guarantees declared by one feed adapter."""
+
+    source_types: tuple[str, ...]
+    discovery_mode: Literal["window", "cursor", "poll", "none"] = "window"
+    window_resolution_seconds: int | None = 86_400
+    window_filtering: Literal["server", "client", "none"] = "server"
+    durable_cursor: bool = False
+    supports_inspect: bool = True
+    target_matcher: Callable[[str], bool] | None = None
+    request_hosts: tuple[str, ...] = ()
+    min_request_interval_seconds: float = 0.1
+    watch_interval_hours: int = 24
+    watch_timeout_seconds: float = 20.0
+    title_priorities: dict[str, int] = field(default_factory=dict)
+    query_builder: Callable[[list[str]], list[dict[str, Any]]] | None = None
+
+    @property
+    def supports_time_coverage(self) -> bool:
+        return (
+            self.discovery_mode == "window"
+            and self.window_filtering in {"server", "client"}
+        )
+
+
 class SourceAdapter(Protocol):
+    capabilities: SourceCapabilities
+
     async def discover(
         self,
         query: dict[str, Any],

@@ -77,7 +77,7 @@
 | `ItemView` | `item_id`、`revision`、`title`、`summary`、`category`、`triage_status`、`is_watched`、`code_status`、`first_seen_at`、`updated_at`、`sources`、`sources_truncated`。精确查询时另返回 `notes` |
 | `EventView` | `id`、`item_id`、`event_type`、`created_at`、`source`（可空的来源快照）、`payload`（由事件类型决定） |
 
-`source_type` 为 `arxiv | hf_paper | hf_model | github_repo`。`feed` 为 `arxiv | hf_papers | hf_models | github`。`triage_status` 为 `inbox | saved | ignored`。`code_status` 为 `unknown | not_detected | detected`。
+`source_type` 和 `feed` 是由 AdapterRegistry 声明的稳定小写标识符（`^[a-z][a-z0-9_]{0,63}$`）；当前内置值为 `arxiv | hf_paper | hf_model | github_repo` 和 `arxiv | hf_papers | hf_models | github`。新增来源可以作为普通 `SourceRef` 和 `SyncJobStatus` 返回，不需要改变 MCP schema。`triage_status` 为 `inbox | saved | ignored`。`code_status` 为 `unknown | not_detected | detected`。
 
 列表最多返回每项 5 个来源，精确查询最多 50 个。优先放与本次来源筛选匹配的来源，其余按来源类型和稳定 ID 排序。返回摘要预览最多 800 字符。若来源超出上限，置 `sources_truncated=true`。用户备注最多 4,000 字符。所有内容长度以 Unicode 字符计。
 
@@ -124,15 +124,15 @@
 
 ### 4.3 `get_sync_status` · 检查数据覆盖
 
-可选 `feeds` 为 1–4 个唯一采集子源。缺省返回全部启用子源。响应含 `jobs`、`watch_refresh`。
+可选 `feeds` 为唯一且已注册的 Feed 标识符数组。缺省返回全部启用子源。响应含 `jobs`、`watch_refresh`。
 
-- `jobs[]` 包含 `job_key`、`feed`、`query`、`coverage_from`、`completed_until`、`last_attempt_at`、`last_success_at`、`last_status` 和 `last_error_code`。每个周期查询单独报告。启用但未运行的作业返回 `last_status="never"`，覆盖字段为 `null`。状态枚举为 `never | running | success | partial | failed`；`running` 从当前作业运行记录判断，恢复时清理已失去锁的陈旧记录。
-- `watch_refresh` 返回 `last_attempt_at`、`last_status`、`checked`、`failed`、`pending_due`。它是独立队列，统计覆盖全部来源，计数在首次运行前可为 `null`。
+- `jobs[]` 包含 `job_key`、`feed`、`query`、`coverage_from`、`completed_until`、`last_attempt_at`、`last_success_at`、`last_status`、`last_error_code` 和 `pending_segments`。每个规范化查询作业单独报告。启用但未运行的作业返回 `last_status="never"`，覆盖字段为 `null`。状态枚举为 `never | running | success | partial | failed | skipped`；`running` 从当前作业运行记录判断，恢复时清理已失去锁的陈旧记录。
+- `watch_refresh` 返回 `last_attempt_at`、`last_status`、`checked`、`failed`、`skipped`、`pending_due`、`due_count`、`watched_sources`、`failed_sources` 和 `next_due_at`。它是独立队列，统计覆盖全部注册来源，计数在首次运行前可为 `null`。
 - 手动扫描的覆盖由该次 `fetch_updates` 回执返回。调用状态工具时只读取本地记录。
 
 ### 4.4 `inspect_source` · 探查来源
 
-输入 `target: str`，1–2,048 字符。接受裸 arXiv ID、arXiv 论文 URL、HF Paper/Model URL、GitHub 仓库 URL。解析受支持的官方 HTTPS 主机和路径后，由适配器构造请求目标。URL、重定向和凭证管理遵循[架构基线第 11 章](../information-desk-architecture-v1.1.md#11-异常并发数据安全与资源限制)。
+输入 `target: str`，1–2,048 字符。接受已注册适配器的目标格式；当前内置格式包括裸 arXiv ID、arXiv 论文 URL、HF Paper/Model URL 和 GitHub 仓库 URL。目标路由由 AdapterRegistry 能力声明的 matcher 决定，网络只允许适配器声明的 HTTPS 主机。URL、重定向和凭证管理遵循[架构基线第 11 章](../information-desk-architecture-v1.1.md#11-异常并发数据安全与资源限制)。
 
 返回 `source: SourceRef`、`title`、`summary`、`checked_at`、`code_status`、`signals`、`root_files`、`checked_depth`、`extracted_links`、`content_excerpt`、`limitations`。其中：
 
@@ -163,18 +163,18 @@
 | 参数 | 类型及默认值 | 约束与语义 |
 |---|---|---|
 | `days` | 整数，默认 2 | 1–14，决定此次回溯区间 |
-| `feeds` | 数组，可选 | 1–4 个唯一且启用的 feed；缺省使用启用列表 |
+| `feeds` | 数组，可选 | 唯一且启用的 Feed 标识符；缺省使用启用列表 |
 | `topics` | 字符串数组，可选 | 1–10 个非空主题，每项最多 100 字符；缺省使用配置 |
 | `limit` | 整数，默认 30 | 1–100，仅限制本次回执中的事件预览 |
 
-请求开始时固定 `[now - days, now)`，再按各平台查询粒度切段。手动刷新使用独立作业命名空间，与定时作业共用按 feed 的同步锁和速率限制；一次刷新按固定顺序尝试锁定所有所选 feed，获取失败即释放已获得的锁。本工具只执行发现扫描，定时同步负责 `watch_refresh`。MCP 刷新默认总预算 30 秒，可由部署配置调整并应小于目标宿主工具超时。预算到期结束当前扫描，已提交页面和事件可继续读取。宿主断开后不启动新的页面请求，既有事务由服务完成或回滚。
+请求开始时固定 `[now - days, now)`，再按适配器声明的查询粒度切段。手动刷新使用独立且稳定的作业命名空间，重试可恢复待处理分段，但不会推进定时作业的水位线。它与定时作业共享按 Feed 的同步锁和速率限制；定时同步在发现阶段还锁定全部已注册 Feed，避免 Watch 与并行手动同步碰撞。获取失败会释放已获得的锁。本工具只执行发现扫描，定时同步负责 Watch 队列。MCP 刷新默认总预算 30 秒，可由部署配置调整并应小于目标宿主工具超时。预算到期结束当前扫描，已提交页面和事件可继续读取。
 
 返回数据字段：
 
 | 字段 | 含义 |
 |---|---|
 | `run_id`、`started_at`、`finished_at` | 本次请求及运行时间 |
-| `status` | 所有子作业完整时为 `success`；存在已提交页面或完成区间且仍有未完成范围时为 `partial`；运行已建立但没有可用结果时为 `failed` |
+| `status` | 所有子作业完整时为 `success`；存在已提交页面或连续完成区间且仍有未完成范围时为 `partial`；运行已建立但没有可用结果时为 `failed`；能力或预算导致没有启动的作业为 `skipped` |
 | `jobs` | 每个规范化查询作业的 `job_key`、`feed`、`window_start`、`window_end`、`completed_until`、`status`、`error_code`。单个 feed 可有多个查询作业 |
 | `stats` | `fetched`、`new_items`、`new_sources`、`new_events`、`conflicts` |
 | `events_preview`、`events_preview_truncated` | 本次运行产生的事件预览，按 ID 升序；重复抓取命中既有事件时不算本次新事件 |

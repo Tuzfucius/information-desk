@@ -60,6 +60,18 @@ async def test_manual_and_scheduled_sync_share_lock_and_release_after_run(settin
     assert result["status"] == "success"
 
 
+async def test_scheduled_watch_run_holds_all_registered_feed_locks(settings, repository) -> None:
+    adapters = {"arxiv": EmptyAdapter(), "github": EmptyAdapter()}
+    resolver = IdentityResolver(repository)
+    refresher = WatchRefresher(settings, repository, adapters, resolver)
+    sync = SyncEngine(settings, repository, adapters, resolver, refresher, lambda _r: None)
+
+    with sync._feed_lock("github"), pytest.raises(InfoDeskError) as raised:
+        await sync.run(FetchRequest(feeds=["arxiv"], topics=["VLA"]), scheduled=True)
+
+    assert raised.value.code == "SYNC_ALREADY_RUNNING"
+
+
 async def test_next_sync_recovers_interrupted_run_without_losing_waterline(settings, repository) -> None:
     sync = _engine(settings, repository)
     query = sync._queries_for_feed("arxiv", ["VLA"])[0]

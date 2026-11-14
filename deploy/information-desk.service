@@ -5,4 +5,7 @@ Description=Information Desk scheduled source synchronization
 Type=oneshot
 Environment=INFO_DESK_HOME=%h/.information-desk
 UMask=0077
+TimeoutStartSec=16min
+TimeoutStopSec=30s
+KillSignal=SIGINT
 ExecStart=%h/.local/bin/info-desk sync

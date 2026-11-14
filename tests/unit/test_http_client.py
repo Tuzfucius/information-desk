@@ -33,6 +33,36 @@ async def test_arxiv_request_interval_is_enforced_without_real_sleep() -> None:
 
 
 @pytest.mark.asyncio
+async def test_registered_source_policy_extends_host_allowlist_and_rate_limit() -> None:
+    clock_value = [100.0]
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+        clock_value[0] += delay
+
+    async with SafeHttpClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, request=request)),
+        clock=lambda: clock_value[0], sleep=sleep,
+    ) as client:
+        with pytest.raises(InfoDeskError, match="supported source hosts"):
+            async with client.stream("GET", "https://updates.example.test/api"):
+                pass
+        client.register_source_policy(
+            request_hosts=("updates.example.test",), min_interval_seconds=2.5
+        )
+        for _ in range(2):
+            async with client.stream("GET", "https://updates.example.test/api") as response:
+                await response.aread()
+        with pytest.raises(ValueError, match="DNS name"):
+            client.register_source_policy(
+                request_hosts=("bad_host.example",), min_interval_seconds=0.1
+            )
+
+    assert delays == [pytest.approx(2.5)]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("token", "expected"),
     [(None, 6.1), ("github-secret", 2.1)],
