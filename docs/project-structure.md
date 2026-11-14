@@ -136,7 +136,7 @@ uv python install
 uv sync --locked
 uv run --locked pytest
 uv run --locked info-desk doctor
-uv run --locked info-desk serve --transport stdio --profile read-only
+uv run --locked info-desk serve --transport stdio --profile standard
 ```
 
 MCP 宿主启动配置使用已同步项目环境中 `info-desk` 的绝对路径，向进程传入 `INFO_DESK_HOME`。这样宿主无需先加载交互式 shell。定时器调用同一个已安装入口，使用同一数据目录。将环境准备、初始迁移及实际目标宿主配置记录在 `docs/operations.md`。
@@ -157,7 +157,7 @@ GitHub Actions 在 Python 3.11/3.12 上运行 Ruff、锁文件检查、离线测
 
 ## 6. 与架构基线的实施差异
 
-- 工具名称沿用 V1.1。MCP 默认只注册三个本地读工具，`standard` 注册全部六个。
+- 工具名称沿用 V1.1。MCP 默认使用 `standard` 并注册全部六个工具；`read-only` 只注册三个本地读工具。
 - `fetch_updates` 由原有事件页改为运行回执及事件预览，全局续读统一使用 `list_events`。
 - `search_items` 增加精确 Item ID 和来源发布日期过滤。公开对象使用 `item_id`，以便跨工具直接传递。
 - 原作业锁收紧为共享 feed 锁，防止同源的周期任务和手动刷新并行消耗配额。周期和手动任务仍独立记账。

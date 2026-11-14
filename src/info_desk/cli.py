@@ -63,7 +63,7 @@ def _parser() -> argparse.ArgumentParser:
     serve_parser = subparsers.add_parser("serve", help="Run the MCP stdio server.")
     serve_parser.add_argument("--transport", choices=["stdio"], default="stdio")
     serve_parser.add_argument(
-        "--profile", choices=["read-only", "standard"], default="read-only"
+        "--profile", choices=["read-only", "standard"], default="standard"
     )
 
     sync = subparsers.add_parser("sync", help="Run a scheduled or bounded manual synchronization.")

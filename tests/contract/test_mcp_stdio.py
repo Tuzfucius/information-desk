@@ -11,14 +11,15 @@ from info_desk.storage.repository import Repository
 from info_desk.storage.sqlite import Database
 
 
-def _parameters(home, profile: str) -> StdioServerParameters:
+def _parameters(home, profile: str | None) -> StdioServerParameters:
     environment = os.environ.copy()
     environment["INFO_DESK_HOME"] = str(home)
     environment.pop("GITHUB_TOKEN", None)
     environment.pop("HF_TOKEN", None)
     return StdioServerParameters(
         command=sys.executable,
-        args=["-m", "info_desk.cli", "serve", "--transport", "stdio", "--profile", profile],
+        args=["-m", "info_desk.cli", "serve", "--transport", "stdio"]
+        + (["--profile", profile] if profile else []),
         env=environment,
         cwd=str(home.parent),
     )
@@ -86,7 +87,10 @@ async def test_stdio_read_only_profile_lists_calls_and_validates_three_tools(tmp
 
 
 @pytest.mark.asyncio
-async def test_stdio_standard_profile_has_typed_schemas_and_structured_business_errors(tmp_path) -> None:
+@pytest.mark.parametrize("profile", [None, "standard"])
+async def test_stdio_standard_profile_has_typed_schemas_and_structured_business_errors(
+    tmp_path, profile
+) -> None:
     home = tmp_path / "standard-home"
     repository = Repository(Database(home / "intel.db"))
     repository.initialize()
@@ -102,7 +106,7 @@ async def test_stdio_standard_profile_has_typed_schemas_and_structured_business_
             conn=connection,
         )
 
-    async with Client(_parameters(home, "standard"), read_timeout_seconds=10) as client:
+    async with Client(_parameters(home, profile), read_timeout_seconds=10) as client:
         listed = await client.list_tools()
         tools = {tool.name: tool for tool in listed.tools}
         revision_error = _structured(

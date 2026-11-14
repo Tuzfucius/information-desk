@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
 
 
-def create_server(service: Any, *, profile: str = "read-only") -> MCPServer:
+def create_server(service: Any, *, profile: str = "standard") -> MCPServer:
     if profile not in {"read-only", "standard"}:
         raise ValueError("profile must be 'read-only' or 'standard'")
 
@@ -229,5 +229,5 @@ def create_server(service: Any, *, profile: str = "read-only") -> MCPServer:
     return server
 
 
-def serve(service: Any, *, profile: str = "read-only") -> None:
+def serve(service: Any, *, profile: str = "standard") -> None:
     create_server(service, profile=profile).run(transport="stdio")

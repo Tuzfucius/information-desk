@@ -50,7 +50,7 @@ After initializing the database, configure the host with the absolute path to th
   "mcpServers": {
     "information-desk": {
       "command": "/path/to/information-desk/.venv/bin/info-desk",
-      "args": ["serve", "--transport", "stdio", "--profile", "read-only"],
+      "args": ["serve", "--transport", "stdio", "--profile", "standard"],
       "env": {
         "INFO_DESK_HOME": "/home/username/.information-desk"
       }
@@ -59,7 +59,7 @@ After initializing the database, configure the host with the absolute path to th
 }
 ```
 
-`read-only` exposes local search, events and status; `standard` also permits source inspection, curation and network refresh. Inject tokens through the host's environment configuration when needed. Stdout is reserved for MCP protocol messages; diagnostics go to stderr or log files. The SDK stdio subprocess is tested; a specific end-user MCP host has not yet been verified.
+`standard` is the default and permits source inspection, curation and network refresh as well as local search, events and status. Select `--profile read-only` to restrict the server to local queries. Inject tokens through the host's environment configuration when needed. Stdout is reserved for MCP protocol messages; diagnostics go to stderr or log files. The SDK stdio subprocess is tested; a specific end-user MCP host has not yet been verified.
 
 ## Development
 

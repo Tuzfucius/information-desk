@@ -31,7 +31,7 @@ export HF_TOKEN="..."
   "mcpServers": {
     "information-desk": {
       "command": "/absolute/path/to/information-desk/.venv/bin/info-desk",
-      "args": ["serve", "--transport", "stdio", "--profile", "read-only"],
+      "args": ["serve", "--transport", "stdio", "--profile", "standard"],
       "env": {
         "INFO_DESK_HOME": "/home/username/.information-desk"
       }
@@ -40,7 +40,7 @@ export HF_TOKEN="..."
 }
 ```
 
-`read-only` 提供本地检索、事件读取与状态查询。`standard` 还提供来源探查、人工整理和联网刷新。MCP stdio 的 stdout 专用于协议消息。诊断和错误日志写入 stderr 或轮转文件。
+默认 `standard` 提供本地查询、来源探查、人工整理和联网刷新。使用 `--profile read-only` 可限制为本地检索、事件读取与状态查询。MCP stdio 的 stdout 专用于协议消息。诊断和错误日志写入 stderr 或轮转文件。
 
 ## 手动运行
 

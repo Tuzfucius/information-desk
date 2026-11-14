@@ -4,7 +4,7 @@
 
 ## 1. 工具注册与调用边界
 
-同一个 MCP stdio 服务以 `info-desk serve --transport stdio --profile <profile>` 启动。默认使用 `read-only`。部署方在启动时选择模式，工具参数不能切换模式。
+同一个 MCP stdio 服务以 `info-desk serve --transport stdio --profile <profile>` 启动。默认使用 `standard`。部署方在启动时选择模式，工具参数不能切换模式。
 
 | 工具 | `read-only` | `standard` | 副作用 |
 |---|---|---|---|
