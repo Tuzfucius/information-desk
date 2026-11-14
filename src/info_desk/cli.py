@@ -22,6 +22,7 @@ from info_desk.contracts import (
     StatusRequest,
 )
 from info_desk.exceptions import InfoDeskError
+from info_desk.integrations.aihot import AIHOTClient
 from info_desk.server import serve
 from info_desk.storage.migrations import SCHEMA_VERSION
 
@@ -71,6 +72,34 @@ def _parser() -> argparse.ArgumentParser:
     sync.add_argument("--feed", action="append", dest="feeds")
     sync.add_argument("--topic", action="append", dest="topics")
     subparsers.add_parser("status", help="Show local synchronization coverage.")
+
+    aihot = subparsers.add_parser("aihot", help="Query the optional AIHOT remote MCP service.")
+    aihot_actions = aihot.add_subparsers(dest="aihot_action", required=True)
+    latest = aihot_actions.add_parser("latest", help="Get recent AIHOT items.")
+    latest.add_argument("--window", choices=["24h", "7d"], default="24h")
+    latest.add_argument("--mode", choices=["selected", "all"], default="selected")
+    latest.add_argument("--category")
+    latest.add_argument("--limit", type=int, default=10)
+    search_aihot = aihot_actions.add_parser("search", help="Search recent AIHOT items.")
+    search_aihot.add_argument("q")
+    search_aihot.add_argument("--window", choices=["24h", "7d"], default="7d")
+    search_aihot.add_argument("--category")
+    search_aihot.add_argument("--limit", type=int, default=10)
+    hot = aihot_actions.add_parser("hot-topics", help="Get the current AIHOT hot topics.")
+    hot.add_argument("--limit", type=int, default=10)
+    story = aihot_actions.add_parser("story", help="Get a timeline by real AIHOT story ID.")
+    story.add_argument("public_id")
+    story.add_argument("--report-limit", type=int, default=20)
+    daily = aihot_actions.add_parser("daily", help="Get an AIHOT daily report.")
+    daily.add_argument("--date")
+    weekly = aihot_actions.add_parser("weekly", help="Get an AIHOT weekly report.")
+    weekly.add_argument("--week")
+    monthly = aihot_actions.add_parser("monthly", help="Get an AIHOT monthly report.")
+    monthly.add_argument("--month")
+    aihot_actions.add_parser("codex-resets", help="Get Codex reset tracking.")
+    aihot_actions.add_parser("antigravity-resets", help="Get Antigravity reset tracking.")
+    aihot_actions.add_parser("claude-resets", help="Get Claude reset tracking.")
+    aihot_actions.add_parser("grok-bot-resets", help="Get Grok Bot reset tracking.")
 
     search = subparsers.add_parser("search", help="Search saved research items.")
     search.add_argument("--keyword")
@@ -131,6 +160,20 @@ def main() -> None:
             }
         )
         raise SystemExit(2) from error
+
+    if args.command == "aihot" and not settings.aihot_enabled:
+        _print(
+            {
+                "ok": False,
+                "error": {
+                    "code": "INTEGRATION_DISABLED",
+                    "message": "Enable [aihot].enabled to use AIHOT tools.",
+                    "retryable": False,
+                    "details": {},
+                },
+            }
+        )
+        raise SystemExit(2)
 
     if args.command in {"init", "doctor", "sync"}:
         service, repository, client = create_application(
@@ -193,7 +236,32 @@ def main() -> None:
                 raise SystemExit(1)
             return
         if args.command == "serve":
-            serve(service, profile=args.profile)
+            serve(service, profile=args.profile, aihot_enabled=settings.aihot_enabled)
+            return
+        if args.command == "aihot":
+            tool_argument_builders = {
+                "latest": lambda: ("aihot_get_latest", {"window": args.window, "mode": args.mode, "category": args.category, "limit": args.limit}),
+                "search": lambda: ("aihot_search", {"q": args.q, "window": args.window, "category": args.category, "limit": args.limit}),
+                "hot-topics": lambda: ("aihot_get_hot_topics", {"limit": args.limit}),
+                "story": lambda: ("aihot_get_story", {"public_id": args.public_id, "report_limit": args.report_limit}),
+                "daily": lambda: ("aihot_get_daily", {"date": args.date}),
+                "weekly": lambda: ("aihot_get_weekly", {"week": args.week}),
+                "monthly": lambda: ("aihot_get_monthly", {"month": args.month}),
+                "codex-resets": lambda: ("aihot_get_codex_resets", {}),
+                "antigravity-resets": lambda: ("aihot_get_antigravity_resets", {}),
+                "claude-resets": lambda: ("aihot_get_claude_resets", {}),
+                "grok-bot-resets": lambda: ("aihot_get_grok_bot_resets", {}),
+            }
+            tool_name, arguments = tool_argument_builders[args.aihot_action]()
+            response = asyncio.run(
+                AIHOTClient(
+                    endpoint=settings.aihot_endpoint,
+                    timeout_sec=settings.aihot_timeout_sec,
+                ).call_tool(tool_name, arguments)
+            )
+            _print(response)
+            if not response.ok:
+                raise SystemExit(2)
             return
         if args.command == "sync":
             if args.days is None and args.feeds is None and args.topics is None:

@@ -26,12 +26,19 @@ from info_desk.contracts import (
     StatusResponse,
 )
 from info_desk.exceptions import InfoDeskError
+from info_desk.integrations.aihot import AIHOTClient, register_aihot_tools
 
 logger = logging.getLogger(__name__)
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
 
 
-def create_server(service: Any, *, profile: str = "standard") -> MCPServer:
+def create_server(
+    service: Any,
+    *,
+    profile: str = "standard",
+    aihot_enabled: bool = False,
+    aihot_client_factory: Any = None,
+) -> MCPServer:
     if profile not in {"read-only", "standard"}:
         raise ValueError("profile must be 'read-only' or 'standard'")
 
@@ -226,8 +233,27 @@ def create_server(service: Any, *, profile: str = "standard") -> MCPServer:
                 ),
             )
 
+        if aihot_enabled:
+            timeout_sec = getattr(getattr(service, "settings", None), "aihot_timeout_sec", 25)
+            register_aihot_tools(
+                server,
+                aihot_client_factory
+                or (lambda: AIHOTClient(timeout_sec=timeout_sec)),
+            )
+
     return server
 
 
-def serve(service: Any, *, profile: str = "standard") -> None:
-    create_server(service, profile=profile).run(transport="stdio")
+def serve(
+    service: Any,
+    *,
+    profile: str = "standard",
+    aihot_enabled: bool = False,
+    aihot_client_factory: Any = None,
+) -> None:
+    create_server(
+        service,
+        profile=profile,
+        aihot_enabled=aihot_enabled,
+        aihot_client_factory=aihot_client_factory,
+    ).run(transport="stdio")
