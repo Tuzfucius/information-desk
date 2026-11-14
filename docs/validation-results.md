@@ -15,7 +15,7 @@
 | 数据库诊断 | schema 2、`integrity_check=ok`、外键违规 0、FTS5 可用、数据目录 0700、数据库 0600 |
 | 有界 live 冒烟 | 1 个冒烟用例通过，依次对 arXiv、HF Daily Papers、HF Models、GitHub Search 各请求一页；无生产数据库、无凭证依赖 |
 | 特定 MCP 宿主 | 未验证；当前没有指定/配置目标宿主。SDK stdio 验证不能替代此项 |
-| 远程 CI | 提交推送后以 GitHub Actions 实际运行状态补记；本地结果不冒充远程 CI |
+| 远程 CI | GitHub Actions run [43556163378](https://github.com/Tuzfucius/information-desk/actions/runs/43556163378) 对代码提交 `fb219007` 完成且结论为 success：静态检查、Python 3.11/3.12 离线测试和 wheel 构建/安装四个 job 均通过；push 事件按设计跳过 live job。本机 live 冒烟单独通过 |
 
 完整离线命令：
 
