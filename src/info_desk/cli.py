@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,14 @@ def _json_default(value: Any) -> Any:
 
 
 def _print(value: Any) -> None:
-    print(json.dumps(value, ensure_ascii=False, indent=2, default=_json_default))
+    output = json.dumps(value, ensure_ascii=False, indent=2, default=_json_default)
+    encoding = getattr(sys.stdout, "encoding", None)
+    if encoding:
+        try:
+            output.encode(encoding)
+        except UnicodeEncodeError:
+            output = json.dumps(value, ensure_ascii=True, indent=2, default=_json_default)
+    print(output)
 
 
 def _now() -> str:

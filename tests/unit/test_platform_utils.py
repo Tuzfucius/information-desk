@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+
+import pytest
+
 from info_desk import platform_utils
 
 
@@ -30,6 +34,7 @@ def test_windows_private_helpers_do_not_apply_posix_chmod(tmp_path, monkeypatch)
     assert chmod_calls == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not represented by NTFS ACLs")
 def test_posix_permission_helpers_keep_private_modes(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(platform_utils, "_is_windows", lambda: False)
     directory = platform_utils.ensure_private_directory(tmp_path / "private")

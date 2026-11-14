@@ -229,10 +229,12 @@ async def test_unresolvable_github_window_remains_partial(settings, repository) 
 
 async def test_slow_source_does_not_consume_the_next_sources_budget(settings, repository) -> None:
     settings.enabled_feeds = ["arxiv", "hf_papers"]
-    settings.refresh_budget_sec = 0.3
+    # Leave enough room for Windows event-loop and SQLite scheduling jitter while
+    # still proving that each source receives its share of the common budget.
+    settings.refresh_budget_sec = 4
 
     async def slow(_query, _window, _token):
-        await asyncio.sleep(1)
+        await asyncio.sleep(10)
         return PageResult(records=[], page_complete=True)
 
     adapters = {"arxiv": ScriptedAdapter(slow), "hf_papers": ScriptedAdapter()}

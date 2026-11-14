@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
 
 import pytest
 
+from info_desk import cli
 from info_desk.cli import main
 from info_desk.sources.base import CandidateSource
 from info_desk.storage.repository import Repository
@@ -21,6 +23,19 @@ def _invoke(monkeypatch, capsys, home, *arguments):
     captured = capsys.readouterr()
     assert captured.err == ""
     return json.loads(captured.out)
+
+
+def test_cli_json_escapes_unicode_when_console_encoding_cannot_represent_it(monkeypatch) -> None:
+    output = io.BytesIO()
+    stream = io.TextIOWrapper(output, encoding="cp1252")
+    monkeypatch.setattr(cli.sys, "stdout", stream)
+
+    cli._print({"home": "中文 data"})
+    stream.flush()
+
+    encoded = output.getvalue().decode("cp1252")
+    assert "\\u4e2d\\u6587" in encoded
+    assert json.loads(encoded) == {"home": "中文 data"}
 
 
 def test_cli_direct_init_doctor_status_and_backup(monkeypatch, capsys, tmp_path) -> None:
