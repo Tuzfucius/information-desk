@@ -89,7 +89,7 @@ class HuggingFacePapersAdapter:
         records_for_window: list[CandidateSource] = []
         current_day = page_day
         current_page = page_number
-        while current_day < len(start_date):
+        while current_day < len(dates):
             response = await bounded_get(
                 self.client,
                 self.endpoint,
@@ -151,8 +151,8 @@ def _github_links(value: Any) -> list[str]:
     else:
         values = []
     normalized: list[str] = []
-    for value in values:
-        match = GITHUB_REPO.match(value.strip())
+    for entry in values:
+        match = GITHUB_REPO.match(entry.strip())
         if match:
             normalized.append(f"https://github.com/{match.group(1)}")
     return list(dict.fromkeys(normalized))
@@ -201,7 +201,7 @@ def _paper_id(target: str) -> str:
 
 
 def _in_window(value: str, start: datetime, end: datetime) -> bool:
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     if start.tzinfo is None:

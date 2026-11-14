@@ -67,9 +67,12 @@ class SearchRequest(StrictModel):
             )
         ):
             raise ValueError("item_id must be used as an exact query")
-        if self.published_from and self.published_before:
-            if self.published_from >= self.published_before:
-                raise ValueError("published_from must be earlier than published_before")
+        if (
+            self.published_from
+            and self.published_before
+            and self.published_from >= self.published_before
+        ):
+            raise ValueError("published_from must be earlier than published_before")
         return self
 
 
@@ -180,8 +183,131 @@ class EventsResponse(BaseModel):
     warnings: list[WarningView] = Field(default_factory=list)
 
 
-class ObjectResponse(BaseModel):
+class SyncJobStatus(BaseModel):
+    job_key: str
+    feed: Feed
+    query: dict[str, object]
+    coverage_from: datetime | None = None
+    completed_until: datetime | None = None
+    last_attempt_at: datetime | None = None
+    last_success_at: datetime | None = None
+    last_status: Literal["never", "running", "success", "partial", "failed"]
+    last_error_code: str | None = None
+
+
+class WatchRefreshStatus(BaseModel):
+    last_attempt_at: datetime | None = None
+    last_status: Literal["never", "running", "success", "partial", "failed"]
+    checked: int | None = None
+    failed: int | None = None
+    pending_due: bool
+
+
+class StatusData(BaseModel):
+    jobs: list[SyncJobStatus]
+    watch_refresh: WatchRefreshStatus
+
+
+class StatusResponse(BaseModel):
     ok: bool
-    data: dict[str, object] | None = None
+    data: StatusData | None = None
+    error: ErrorView | None = None
+    warnings: list[WarningView] = Field(default_factory=list)
+
+
+class InspectSource(BaseModel):
+    source_type: Literal["arxiv", "hf_paper", "hf_model", "github_repo"]
+    source_uid: str
+    external_id: str
+    url: str
+    published_at: datetime | None = None
+    source_updated_at: datetime | None = None
+
+
+class ExtractedLink(BaseModel):
+    url: str
+    relation_type: str
+    evidence_level: Literal["strong", "supporting", "weak"]
+    evidence_origin: str | None = None
+    evidence_excerpt: str | None = None
+
+
+class ContentExcerpt(BaseModel):
+    text: str = Field(max_length=4000)
+    source_url: str
+    truncated: bool
+    trust: Literal["untrusted_external"]
+
+
+class InspectData(BaseModel):
+    source: InspectSource
+    title: str
+    summary: str
+    checked_at: datetime
+    code_status: Literal["unknown", "not_detected", "detected"]
+    signals: list[str]
+    root_files: list[str]
+    checked_depth: int
+    extracted_links: list[ExtractedLink]
+    content_excerpt: ContentExcerpt | None = None
+    limitations: list[str]
+
+
+class InspectResponse(BaseModel):
+    ok: bool
+    data: InspectData | None = None
+    error: ErrorView | None = None
+    warnings: list[WarningView] = Field(default_factory=list)
+
+
+class SaveData(BaseModel):
+    item_id: int
+    revision: int
+    triage_status: Literal["inbox", "saved", "ignored"]
+    action: Literal["created", "updated", "unchanged"]
+
+
+class SaveResponse(BaseModel):
+    ok: bool
+    data: SaveData | None = None
+    error: ErrorView | None = None
+    warnings: list[WarningView] = Field(default_factory=list)
+
+
+class FetchJob(BaseModel):
+    job_key: str
+    feed: Feed
+    window_start: datetime
+    window_end: datetime
+    completed_until: datetime | None = None
+    status: Literal["success", "partial", "failed"]
+    error_code: str | None = None
+    retry_after_seconds: float | None = None
+    query: dict[str, object] | None = None
+    stats: dict[str, int]
+
+
+class FetchStats(BaseModel):
+    fetched: int
+    new_items: int
+    new_sources: int
+    new_events: int
+    conflicts: int
+
+
+class FetchData(BaseModel):
+    run_id: int
+    started_at: datetime
+    finished_at: datetime
+    status: Literal["success", "partial", "failed"]
+    jobs: list[FetchJob]
+    stats: FetchStats
+    events_preview: list[EventView]
+    events_preview_truncated: bool
+
+
+class FetchResponse(BaseModel):
+    ok: bool
+    data: FetchData | None = None
     error: ErrorView | None = None
     warnings: list[WarningView] = Field(default_factory=list)

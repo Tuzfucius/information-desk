@@ -14,6 +14,14 @@ dependencies = [
   "pydantic>=2,<3",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.24,<2",
+  "pytest-cov>=6,<8",
+  "ruff>=0.11,<1",
+]
+
 [project.scripts]
 info-desk = "info_desk.cli:main"
 
@@ -22,10 +30,15 @@ packages = ["src/info_desk"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/info_desk/storage/sql/001_initial.sql" = "info_desk/storage/sql/001_initial.sql"
+"src/info_desk/storage/sql/002_reliability.sql" = "info_desk/storage/sql/002_reliability.sql"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "--strict-markers"
+markers = [
+  "live: bounded tests that contact public source APIs",
+]
 
 [tool.ruff]
 line-length = 100

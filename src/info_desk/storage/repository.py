@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any
 
-from .migrations import migrate
+from .migrations import SCHEMA_VERSION, SchemaMismatchError, migrate
 from .sqlite import Database
 
 _JSON = json.dumps
@@ -42,8 +43,14 @@ class Repository:
     @staticmethod
     def _check_schema(connection: sqlite3.Connection) -> None:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version < 1:
-            raise RuntimeError("Database is not initialized")
+        if version < SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Database schema {version} must be migrated to {SCHEMA_VERSION} before read-only use"
+            )
+        if version > SCHEMA_VERSION:
+            raise SchemaMismatchError(
+                f"Database schema {version} is newer than supported schema {SCHEMA_VERSION}"
+            )
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -124,8 +131,14 @@ class Repository:
                     join_fts = self._has_fts(connection)
                 if join_fts:
                     expression = " AND ".join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms)
-                    clauses.append("i.id IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)")
-                    parameters.append(expression)
+                    escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                    pattern = f"%{escaped}%"
+                    clauses.append(
+                        "(i.id IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?) "
+                        "OR i.title LIKE ? ESCAPE '\\' OR i.summary LIKE ? ESCAPE '\\' "
+                        "OR i.notes LIKE ? ESCAPE '\\')"
+                    )
+                    parameters.extend((expression, pattern, pattern, pattern))
                 else:
                     escaped = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                     pattern = f"%{escaped}%"
@@ -353,27 +366,35 @@ class Repository:
         summary: str | None = None,
         code_status: str | None = None,
         conn: sqlite3.Connection | None = None,
-    ) -> None:
-        assignments: list[str] = []
-        values: list[Any] = []
-        if title is not None:
-            assignments.append("title = CASE WHEN title_locked = 0 THEN ? ELSE title END")
-            values.append(title)
-        if summary is not None:
-            assignments.append("summary = CASE WHEN summary_locked = 0 THEN ? ELSE summary END")
-            values.append(summary)
-        if code_status is not None:
-            assignments.append("code_status = ?")
-            values.append(code_status)
-        if not assignments:
-            return
-        assignments.extend(("last_seen_at = ?", "updated_at = ?"))
-        values.extend((now, now, item_id))
+    ) -> tuple[str, ...]:
         with self._write_connection(conn) as connection:
+            row = connection.execute(
+                "SELECT title, summary, code_status, title_locked, summary_locked "
+                "FROM items WHERE id = ?",
+                (item_id,),
+            ).fetchone()
+            if row is None:
+                return ()
+            changes: dict[str, Any] = {}
+            if title is not None and not row["title_locked"] and row["title"] != title:
+                changes["title"] = title
+            if summary is not None and not row["summary_locked"] and row["summary"] != summary:
+                changes["summary"] = summary
+            if code_status is not None and row["code_status"] != code_status:
+                changes["code_status"] = code_status
+            assignments = [f"{key} = ?" for key in changes]
+            values = list(changes.values())
+            assignments.append("last_seen_at = ?")
+            values.append(now)
+            if changes:
+                assignments.append("updated_at = ?")
+                values.append(now)
+            values.append(item_id)
             connection.execute(
                 f"UPDATE items SET {', '.join(assignments)} WHERE id = ?",
                 values,
             )
+            return tuple(changes)
 
     def upsert_source(
         self,
@@ -472,16 +493,28 @@ class Repository:
         conn: sqlite3.Connection | None = None,
     ) -> tuple[int, bool]:
         with self._write_connection(conn) as connection:
+            source_snapshot = None
+            if source_id is not None:
+                source = connection.execute(
+                    """SELECT source_type, source_uid, external_id, url,
+                              published_at, source_updated_at
+                       FROM sources WHERE id = ?""",
+                    (source_id,),
+                ).fetchone()
+                if source is not None:
+                    source_snapshot = _JSON(dict(source), ensure_ascii=False, sort_keys=True)
             cursor = connection.execute(
                 """
                 INSERT INTO change_events (item_id, source_id, run_id, event_type,
-                                           event_key, payload_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                                           event_key, payload_json, created_at,
+                                           source_snapshot_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(event_key) DO NOTHING
                 """,
                 (
                     item_id, source_id, run_id, event_type, event_key,
                     _JSON(payload, ensure_ascii=False, sort_keys=True), created_at,
+                    source_snapshot,
                 ),
             )
             if cursor.rowcount:
@@ -515,7 +548,8 @@ class Repository:
         with self._read_connection(conn) as connection:
             rows = connection.execute(
                 f"""
-                SELECT e.id, e.item_id, e.source_id, e.event_type, e.payload_json, e.created_at,
+                SELECT e.id, e.item_id, e.source_id, e.event_type, e.payload_json,
+                       e.source_snapshot_json, e.created_at,
                        s.source_type, s.source_uid, s.external_id, s.url
                 FROM change_events e
                 JOIN items i ON i.id = e.item_id
@@ -531,7 +565,12 @@ class Repository:
             for row in rows[:limit]:
                 event = dict(row)
                 event["payload"] = _loads(event.pop("payload_json"), {})
-                if event["source_id"] is None:
+                snapshot = _loads(event.pop("source_snapshot_json"), None)
+                if snapshot is not None:
+                    event["source"] = snapshot
+                    for key in ("source_type", "source_uid", "external_id", "url"):
+                        event.pop(key, None)
+                elif event["source_id"] is None:
                     event["source"] = None
                 else:
                     event["source"] = {
@@ -557,7 +596,8 @@ class Repository:
         with self._read_connection(conn) as connection:
             rows = connection.execute(
                 """
-                SELECT e.id, e.item_id, e.source_id, e.event_type, e.payload_json, e.created_at,
+                SELECT e.id, e.item_id, e.source_id, e.event_type, e.payload_json,
+                       e.source_snapshot_json, e.created_at,
                        s.source_type, s.source_uid, s.external_id, s.url
                 FROM change_events e
                 JOIN items i ON i.id = e.item_id
@@ -574,7 +614,12 @@ class Repository:
             for row in rows[:limit]:
                 event = dict(row)
                 event["payload"] = _loads(event.pop("payload_json"), {})
-                if event["source_id"] is None:
+                snapshot = _loads(event.pop("source_snapshot_json"), None)
+                if snapshot is not None:
+                    event["source"] = snapshot
+                    for key in ("source_type", "source_uid", "external_id", "url"):
+                        event.pop(key, None)
+                elif event["source_id"] is None:
                     event["source"] = None
                 else:
                     event["source"] = {
@@ -620,7 +665,7 @@ class Repository:
             rows = connection.execute(
                 """
                 SELECT id, left_item_id, right_item_id, evidence_json, status,
-                       created_at, resolved_at
+                       created_at, resolved_at, resolved_item_id
                 FROM merge_conflicts WHERE status = ? ORDER BY id
                 """,
                 (status,),
@@ -692,6 +737,14 @@ class Repository:
             if winner is None or loser is None:
                 raise ValueError("one of the conflict items no longer exists")
 
+            triage_statuses = {winner["triage_status"], loser["triage_status"]}
+            if "ignored" in triage_statuses and len(triage_statuses) > 1:
+                raise ValueError("an ignored item cannot be merged with an active item")
+            triage_status = (
+                "saved" if triage_statuses == {"inbox", "saved"}
+                else winner["triage_status"]
+            )
+
             winner_category = winner["category"]
             loser_category = loser["category"]
             if (
@@ -745,7 +798,7 @@ class Repository:
                 """
                 UPDATE items SET title = ?, title_locked = ?, summary = ?,
                     summary_locked = ?, category = ?, notes = ?, code_status = ?,
-                    is_watched = ?, updated_at = ?, revision = revision + 1
+                    triage_status = ?, is_watched = ?, updated_at = ?, revision = revision + 1
                 WHERE id = ?
                 """,
                 (
@@ -756,6 +809,7 @@ class Repository:
                     category,
                     notes,
                     code_status,
+                    triage_status,
                     is_watched,
                     now,
                     winner_item_id,
@@ -779,12 +833,123 @@ class Repository:
             )
             connection.execute(
                 """
-                UPDATE merge_conflicts SET status = 'resolved', resolved_at = ?
+                UPDATE merge_conflicts SET status = 'resolved', resolved_at = ?,
+                    resolved_item_id = ?
                 WHERE id = ?
                 """,
-                (now, conflict_id),
+                (now, winner_item_id, conflict_id),
             )
             return self.get_item(winner_item_id, conn=connection)
+
+    def upsert_pending_source(
+        self,
+        candidate: Mapping[str, Any],
+        evidence: Mapping[str, Any],
+        matched_item_ids: Sequence[int],
+        *,
+        now: str,
+        conn: sqlite3.Connection | None = None,
+    ) -> tuple[int, bool]:
+        source_type = str(candidate["source_type"])
+        source_uid = str(candidate["source_uid"])
+        with self._write_connection(conn) as connection:
+            existing = connection.execute(
+                "SELECT * FROM pending_sources WHERE source_type = ? AND source_uid = ? "
+                "AND status = 'open'",
+                (source_type, source_uid),
+            ).fetchone()
+            if existing is None:
+                cursor = connection.execute(
+                    """INSERT INTO pending_sources (
+                           source_type, source_uid, candidate_json, evidence_json,
+                           matched_item_ids_json, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        source_type,
+                        source_uid,
+                        _JSON(candidate, ensure_ascii=False, sort_keys=True),
+                        _JSON([evidence], ensure_ascii=False, sort_keys=True),
+                        _JSON(sorted(set(matched_item_ids))),
+                        now,
+                        now,
+                    ),
+                )
+                return int(cursor.lastrowid), True
+            prior_evidence = _loads(existing["evidence_json"], [])
+            if not isinstance(prior_evidence, list):
+                prior_evidence = [prior_evidence]
+            if evidence not in prior_evidence:
+                prior_evidence.append(dict(evidence))
+            prior_matches = _loads(existing["matched_item_ids_json"], [])
+            merged_matches = sorted({int(item_id) for item_id in prior_matches} | set(matched_item_ids))
+            connection.execute(
+                """UPDATE pending_sources SET candidate_json = ?, evidence_json = ?,
+                       matched_item_ids_json = ?, updated_at = ? WHERE id = ?""",
+                (
+                    _JSON(candidate, ensure_ascii=False, sort_keys=True),
+                    _JSON(prior_evidence, ensure_ascii=False, sort_keys=True),
+                    _JSON(merged_matches),
+                    now,
+                    existing["id"],
+                ),
+            )
+            return int(existing["id"]), False
+
+    def get_pending_source(
+        self, pending_id: int, *, conn: sqlite3.Connection | None = None
+    ) -> dict[str, Any] | None:
+        with self._read_connection(conn) as connection:
+            row = connection.execute(
+                "SELECT * FROM pending_sources WHERE id = ? AND status = 'open'",
+                (pending_id,),
+            ).fetchone()
+            return self._pending_source_row(row) if row else None
+
+    def get_open_pending_source_for_identity(
+        self,
+        source_type: str,
+        source_uid: str,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, Any] | None:
+        with self._read_connection(conn) as connection:
+            row = connection.execute(
+                "SELECT * FROM pending_sources WHERE source_type = ? AND source_uid = ? "
+                "AND status = 'open'",
+                (source_type, source_uid),
+            ).fetchone()
+            return self._pending_source_row(row) if row else None
+
+    def list_pending_sources(self, *, conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
+        with self._read_connection(conn) as connection:
+            rows = connection.execute(
+                "SELECT * FROM pending_sources WHERE status = 'open' ORDER BY created_at, id"
+            ).fetchall()
+            return [self._pending_source_row(row) for row in rows]
+
+    @staticmethod
+    def _pending_source_row(row: sqlite3.Row) -> dict[str, Any]:
+        pending = dict(row)
+        pending["candidate"] = _loads(pending.pop("candidate_json"), {})
+        pending["evidence"] = _loads(pending.pop("evidence_json"), [])
+        pending["matched_item_ids"] = _loads(pending.pop("matched_item_ids_json"), [])
+        return pending
+
+    def mark_pending_source_resolved(
+        self,
+        pending_id: int,
+        item_id: int,
+        *,
+        now: str,
+        conn: sqlite3.Connection | None = None,
+    ) -> bool:
+        with self._write_connection(conn) as connection:
+            cursor = connection.execute(
+                """UPDATE pending_sources SET status = 'resolved', resolved_item_id = ?,
+                       updated_at = ? WHERE id = ? AND status = 'open'""",
+                (item_id, now, pending_id),
+            )
+            return cursor.rowcount > 0
 
     def get_sync_state(
         self, job_key: str, *, conn: sqlite3.Connection | None = None
@@ -817,8 +982,10 @@ class Repository:
             connection.execute(
                 """
                 INSERT INTO sync_state (job_key, feed, query_json, coverage_from,
-                                        completed_until, last_attempt_at, last_status, last_error)
-                VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, 'never'), COALESCE(?, ''))
+                                        completed_until, last_success_at, last_attempt_at,
+                                        last_status, last_error)
+                VALUES (?, ?, ?, ?, ?, CASE WHEN ? = 'success' THEN ? END, ?,
+                        COALESCE(?, 'never'), COALESCE(?, ''))
                 ON CONFLICT(job_key) DO UPDATE SET
                     feed = excluded.feed,
                     query_json = excluded.query_json,
@@ -831,8 +998,9 @@ class Repository:
                                             ELSE sync_state.last_success_at END
                 """,
                 (
-                    job_key, feed, query_json, coverage_from, completed_until, now,
-                    last_status, last_error, last_status, last_error, last_status,
+                    job_key, feed, query_json, coverage_from, completed_until,
+                    last_status, now, now, last_status, last_error,
+                    last_status, last_error, last_status,
                 ),
             )
 
@@ -879,6 +1047,58 @@ class Repository:
             if root_run_id is None:
                 connection.execute("UPDATE sync_runs SET root_run_id = ? WHERE id = ?", (run_id, run_id))
             return run_id
+
+    def recover_stale_runs(self, feeds: Sequence[str], *, now: str) -> int:
+        if not feeds:
+            return 0
+        placeholders = ", ".join("?" for _ in feeds)
+        with self.transaction() as connection:
+            rows = connection.execute(
+                f"""SELECT DISTINCT root_run_id FROM sync_runs
+                    WHERE status = 'running' AND feed IN ({placeholders})""",
+                tuple(feeds),
+            ).fetchall()
+            root_ids = {
+                int(row["root_run_id"])
+                for row in rows
+                if row["root_run_id"] is not None
+            }
+            running_roots = connection.execute(
+                "SELECT id, job_key FROM sync_runs WHERE status = 'running' AND id = root_run_id"
+            ).fetchall()
+            selected_feeds = set(feeds)
+            root_ids.update(
+                int(row["id"])
+                for row in running_roots
+                if row["job_key"].startswith("root:")
+                and selected_feeds.intersection(row["job_key"][5:].split(","))
+            )
+            root_ids = sorted(root_ids)
+            if not root_ids:
+                return 0
+            root_placeholders = ", ".join("?" for _ in root_ids)
+            job_rows = connection.execute(
+                f"""SELECT DISTINCT job_key FROM sync_runs
+                    WHERE status = 'running' AND root_run_id IN ({root_placeholders})
+                      AND job_key != ''""",
+                tuple(root_ids),
+            ).fetchall()
+            job_keys = [row["job_key"] for row in job_rows]
+            cursor = connection.execute(
+                f"""UPDATE sync_runs SET status = 'failed', ended_at = ?,
+                       error_code = 'INTERRUPTED'
+                    WHERE status = 'running'
+                      AND (id IN ({root_placeholders}) OR root_run_id IN ({root_placeholders}))""",
+                (now, *root_ids, *root_ids),
+            )
+            if job_keys:
+                job_placeholders = ", ".join("?" for _ in job_keys)
+                connection.execute(
+                    f"""UPDATE sync_state SET last_status = 'failed', last_error = 'INTERRUPTED'
+                        , last_attempt_at = ? WHERE job_key IN ({job_placeholders})""",
+                    (now, *job_keys),
+                )
+            return cursor.rowcount
 
     def update_run(
         self,

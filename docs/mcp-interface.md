@@ -1,6 +1,6 @@
 # information-desk 智能体接口设计
 
-> 状态为待实现。本文细化 [V1.1 架构基线第 10 章](../information-desk-architecture-v1.1.md#10-服务-apimcp-tools-与-cli-契约)。代码位置及交付顺序见[项目结构](project-structure.md)。
+> 本文是已实现 MCP/CLI 接口的契约基线。测试证据见[测试与发布验收](validation-results.md)，代码目录见[项目结构](project-structure.md)。
 
 ## 1. 工具注册与调用边界
 
@@ -26,7 +26,7 @@
 - 工具按顶层命名参数调用，例如 `search_items(keyword="VLA", limit=20)`。输入拒绝未知字段，布尔、整数及字符串类型按 schema 校验。除专门说明外，省略可选字段使用默认值，显式 `null` 为无效输入。
 - 时间输入为含偏移的 RFC 3339 时间，归一化为 UTC。所有区间采用 `[from, before)`；`first_seen_after` 和 `updated_after` 使用严格大于。输出使用 UTC `Z`；不可得的时间以 `null` 表示。
 - `item_id`、`event_id` 和 `run_id` 为正整数。`revision` 为非负整数。标识在当前数据库内有效。
-- 每个工具以带类型的响应模型发布输入及输出 schema。使用 Pydantic 约束字段、枚举与嵌套结构。业务失败走 `ok=false`，协议层错误由 MCP SDK 处理。[MCP Python SDK 结构化输出](https://py.sdk.modelcontextprotocol.io/v2/servers/structured-output/)
+- 每个工具以带类型的响应模型发布输入及输出 schema。使用 Pydantic 约束字段、枚举与嵌套结构。业务失败走 `ok=false`；非法 MCP schema 输入由 SDK 返回协议工具错误，输入符合 schema 但违反业务约束时返回 `INVALID_ARGUMENT`。[MCP Python SDK 结构化输出](https://py.sdk.modelcontextprotocol.io/v2/servers/structured-output/)
 
 成功响应示例：
 
@@ -229,3 +229,5 @@
 | 立即查有没有新发现 | `fetch_updates` 后检查各查询作业的覆盖，再查询本地 Item 或读取事件；部分成功时说明哪些来源尚未扫完 |
 
 契约测试应验证实际 stdio 工具列表和 schema、默认工具范围、空结果、分页、版本冲突和部分刷新。至少用一个目标智能体宿主测试查找、更新和错误反馈。实施阶段见[项目结构](project-structure.md#5-实施顺序与验收)。
+
+实现使用 MCP Python SDK 2.x 的类型化输入/输出模型，参数 schema 约束长度、范围及枚举。read-only profile 通过只读 SQLite 连接注册恰好三个本地工具；standard 注册全部六个工具。SDK stdio 子进程测试不等同于特定宿主互操作验收，目标宿主仍需单独验证。

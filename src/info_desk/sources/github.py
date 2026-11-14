@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import base64
 import re
-from datetime import datetime
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote, unquote, urlparse
 
@@ -105,12 +106,12 @@ class GitHubAdapter:
         if page < 1:
             raise AdapterError("INVALID_CURSOR", "Invalid GitHub page token.")
         start, end = window
-        start_day = _utc_date(start)
-        end_day = _utc_date(end)
+        start_time = _github_timestamp(start)
+        end_time = _github_timestamp(end)
         mode = str(query.get("mode", "created"))
         qualifier = "pushed" if mode in {"updated", "recently_updated"} else "created"
         search_terms = _search_terms(query)
-        search_query = " ".join(search_terms + [f"{qualifier}:{start_day}..{end_day}"])
+        search_query = " ".join(search_terms + [f"{qualifier}:{start_time}..{end_time}"])
         if len(search_query) > 256:
             raise AdapterError("INVALID_ARGUMENT", "GitHub search query exceeds 256 characters.")
         response = await bounded_get(
@@ -131,7 +132,10 @@ class GitHubAdapter:
         payload = response.json()
         if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
             raise AdapterError("UPSTREAM_UNAVAILABLE", "GitHub search returned an invalid response.")
-        total_count = int(payload.get("total_count", 0))
+        try:
+            total_count = int(payload.get("total_count", 0))
+        except (TypeError, ValueError) as error:
+            raise AdapterError("UPSTREAM_UNAVAILABLE", "GitHub returned an invalid result count.") from error
         records = [
             self.normalize(repo)
             for repo in payload["items"]
@@ -141,7 +145,7 @@ class GitHubAdapter:
         capped_at_search_limit = page * self.page_size >= 1000 and total_count >= 1000
         incomplete = bool(payload.get("incomplete_results")) or capped_at_search_limit
         page_complete = next_page * self.page_size > total_count or page * self.page_size >= min(total_count, 1000)
-        if incomplete and not page_complete:
+        if incomplete:
             page_complete = False
         warnings = []
         if payload.get("incomplete_results"):
@@ -319,16 +323,15 @@ def _search_terms(query: dict[str, Any]) -> list[str]:
     return ["(" + " OR ".join(clean) + ")"]
 
 
-def _utc_date(value: datetime) -> str:
-    from datetime import UTC
+def _github_timestamp(value: datetime) -> str:
     normalized = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-    return normalized.date().isoformat()
+    return normalized.strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
 
 def _in_window(value: str | None, start: datetime, end: datetime) -> bool:
     if not value:
         return False
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value)
     from datetime import UTC
 
     if parsed.tzinfo is None:
@@ -342,10 +345,35 @@ def _in_window(value: str | None, start: datetime, end: datetime) -> bool:
 
 def _raise_github_forbidden(response: httpx.Response) -> None:
     retry_after = response.headers.get("Retry-After")
-    if retry_after:
-        raise AdapterError("RATE_LIMITED", f"GitHub rate limit reached. Retry after {retry_after} seconds.")
     remaining = response.headers.get("X-RateLimit-Remaining")
-    if remaining == "0":
-        reset = response.headers.get("X-RateLimit-Reset")
-        raise AdapterError("RATE_LIMITED", f"GitHub rate limit reached. Reset at {reset or 'an unknown time'}.")
+    body = response.content.lower()
+    secondary = b"secondary rate limit" in body or b"abuse detection" in body
+    if retry_after or remaining == "0" or secondary:
+        raise AdapterError(
+            "RATE_LIMITED",
+            "GitHub rate limit reached; retry after the indicated interval.",
+            retry_after_seconds=_rate_limit_delay(response),
+        )
     raise AdapterError("UPSTREAM_FORBIDDEN", "GitHub denied access to the requested resource.")
+
+
+def _rate_limit_delay(response: httpx.Response) -> float | None:
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return max(0.0, float(retry_after))
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=UTC)
+                return max(0.0, retry_at.timestamp() - datetime.now(UTC).timestamp())
+            except (TypeError, ValueError, OverflowError):
+                pass
+    reset = response.headers.get("X-RateLimit-Reset")
+    if reset:
+        try:
+            return max(0.0, float(reset) - datetime.now(UTC).timestamp())
+        except ValueError:
+            pass
+    return None

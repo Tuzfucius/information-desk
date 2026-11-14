@@ -32,6 +32,20 @@ class SourceInspector:
             ) from error
 
         result = inspection.to_dict()
+        candidate = result.pop("source")
+        result["source"] = {
+            key: candidate.get(key)
+            for key in (
+                "source_type",
+                "source_uid",
+                "external_id",
+                "url",
+                "published_at",
+                "source_updated_at",
+            )
+        }
+        result["title"] = candidate.get("title", "")
+        result["summary"] = candidate.get("description", "")
         excerpt = result.pop("content_excerpt", None)
         result["content_excerpt"] = (
             {

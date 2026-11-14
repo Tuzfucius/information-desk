@@ -190,7 +190,12 @@ def _model_id(target: str) -> str:
     path = unquote(parsed.path).strip("/")
     if path.startswith(("papers/", "datasets/", "spaces/")) or path.count("/") < 1:
         raise AdapterError("INVALID_TARGET", "Target is not a Hugging Face model repository.")
-    return path.split("/tree/", 1)[0].split("/blob/", 1)[0]
+    parts = path.split("/")
+    if len(parts) == 2 and all(parts):
+        return path
+    if len(parts) >= 4 and parts[2] in {"tree", "blob"} and parts[3]:
+        return "/".join(parts[:2])
+    raise AdapterError("INVALID_TARGET", "Target must identify a Hugging Face model repository.")
 
 
 def _paper_links(card_data: dict[str, Any], tags: list[str]) -> list[dict[str, Any]]:
@@ -238,7 +243,7 @@ def _next_cursor(link_header: str | None) -> str | None:
 def _in_window(value: str, start: datetime, end: datetime) -> bool:
     from datetime import UTC
 
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     if start.tzinfo is None:
@@ -251,7 +256,7 @@ def _in_window(value: str, start: datetime, end: datetime) -> bool:
 def _before(value: str, boundary: datetime) -> bool:
     from datetime import UTC
 
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     if boundary.tzinfo is None:

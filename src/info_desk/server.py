@@ -5,26 +5,30 @@ from __future__ import annotations
 import inspect
 import logging
 from datetime import datetime
-from typing import Any
-from typing import Literal
+from typing import Annotated, Any, Literal, TypeVar
 
 from mcp.server import MCPServer
+from pydantic import BaseModel, Field
 from pydantic import ValidationError as PydanticValidationError
 
 from info_desk.contracts import (
     EventsRequest,
     EventsResponse,
     FetchRequest,
+    FetchResponse,
     InspectRequest,
-    ObjectResponse,
+    InspectResponse,
     SaveRequest,
+    SaveResponse,
     SearchRequest,
     SearchResponse,
     StatusRequest,
+    StatusResponse,
 )
 from info_desk.exceptions import InfoDeskError
 
 logger = logging.getLogger(__name__)
+ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
 
 
 def create_server(service: Any, *, profile: str = "read-only") -> MCPServer:
@@ -34,17 +38,15 @@ def create_server(service: Any, *, profile: str = "read-only") -> MCPServer:
     server = MCPServer("information-desk", version="0.1.0")
 
     async def response_for(
-        response_type: type[ObjectResponse] | type[SearchResponse] | type[EventsResponse],
+        response_type: type[ResponseModel],
         operation: Any,
-    ) -> Any:
+    ) -> ResponseModel:
         try:
             value = operation()
             if inspect.isawaitable(value):
                 value = await value
+            value = dict(value) if isinstance(value, dict) else value
             warnings = value.pop("warnings", []) if isinstance(value, dict) else []
-            return response_type.model_validate(
-                {"ok": True, "data": value, "warnings": warnings}
-            )
         except InfoDeskError as error:
             details = {
                 "code": error.code,
@@ -54,7 +56,7 @@ def create_server(service: Any, *, profile: str = "read-only") -> MCPServer:
                 "details": error.details,
             }
             return response_type.model_validate({"ok": False, "error": details, "warnings": []})
-        except PydanticValidationError as error:
+        except PydanticValidationError:
             return response_type.model_validate(
                 {
                     "ok": False,
@@ -81,12 +83,30 @@ def create_server(service: Any, *, profile: str = "read-only") -> MCPServer:
                     "warnings": [],
                 }
             )
+        try:
+            return response_type.model_validate(
+                {"ok": True, "data": value, "warnings": warnings}
+            )
+        except PydanticValidationError:
+            logger.exception("MCP service result did not satisfy its output schema")
+            return response_type.model_validate(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": "INTERNAL_ERROR",
+                        "message": "The service returned data outside the tool output schema.",
+                        "retryable": False,
+                        "details": {},
+                    },
+                    "warnings": [],
+                }
+            )
 
     @server.tool()
     async def search_items(
-        item_id: int | None = None,
-        keyword: str | None = None,
-        category: str | None = None,
+        item_id: Annotated[int, Field(gt=0)] | None = None,
+        keyword: Annotated[str, Field(min_length=1, max_length=200)] | None = None,
+        category: Annotated[str, Field(min_length=1, max_length=64)] | None = None,
         triage_status: Literal["inbox", "saved", "ignored"] | None = None,
         is_watched: bool | None = None,
         code_status: Literal["unknown", "not_detected", "detected"] | None = None,
@@ -95,8 +115,8 @@ def create_server(service: Any, *, profile: str = "read-only") -> MCPServer:
         published_before: datetime | None = None,
         first_seen_after: datetime | None = None,
         updated_after: datetime | None = None,
-        limit: int = 20,
-        cursor: str | None = None,
+        limit: Annotated[int, Field(ge=1, le=100)] = 20,
+        cursor: Annotated[str, Field(max_length=512)] | None = None,
     ) -> SearchResponse:
         """Search the local research catalogue. This tool does not contact source websites."""
         return await response_for(
@@ -122,8 +142,8 @@ def create_server(service: Any, *, profile: str = "read-only") -> MCPServer:
 
     @server.tool()
     async def list_events(
-        after_id: int = 0,
-        limit: int = 50,
+        after_id: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=100)] = 50,
         event_types: list[
             Literal["discovered", "source_attached", "content_changed", "code_detected"]
         ] | None = None,
@@ -147,35 +167,37 @@ def create_server(service: Any, *, profile: str = "read-only") -> MCPServer:
     @server.tool()
     async def get_sync_status(
         feeds: list[Literal["arxiv", "hf_papers", "hf_models", "github"]] | None = None,
-    ) -> ObjectResponse:
+    ) -> StatusResponse:
         """Read local synchronization coverage and recent run status."""
         return await response_for(
-            ObjectResponse, lambda: service.get_sync_status(StatusRequest(feeds=feeds))
+            StatusResponse, lambda: service.get_sync_status(StatusRequest(feeds=feeds))
         )
 
     if profile == "standard":
 
         @server.tool()
-        async def inspect_source(target: str) -> ObjectResponse:
-            """Inspect a supported arXiv, Hugging Face, or GitHub source over HTTPS."""
+        async def inspect_source(
+            target: Annotated[str, Field(min_length=1, max_length=2048)]
+        ) -> InspectResponse:
+            """Inspect a supported raw arXiv ID or official arXiv, HF, or GitHub HTTPS URL."""
             return await response_for(
-                ObjectResponse,
+                InspectResponse,
                 lambda: service.inspect_source(InspectRequest(target=target)),
             )
 
         @server.tool()
         async def save_item(
-            item_id: int | None = None,
+            item_id: Annotated[int, Field(gt=0)] | None = None,
             source: dict[str, str] | None = None,
-            expected_revision: int | None = None,
+            expected_revision: Annotated[int, Field(ge=0)] | None = None,
             triage_status: Literal["inbox", "saved", "ignored"] | None = None,
-            category: str | None = None,
+            category: Annotated[str, Field(max_length=64)] | None = None,
             is_watched: bool | None = None,
-            notes: str | None = None,
-        ) -> ObjectResponse:
+            notes: Annotated[str, Field(max_length=4000)] | None = None,
+        ) -> SaveResponse:
             """Save, ignore, follow, or annotate an item, or import a verified source."""
             return await response_for(
-                ObjectResponse,
+                SaveResponse,
                 lambda: service.save_item(
                     SaveRequest(
                         item_id=item_id,
@@ -191,14 +213,14 @@ def create_server(service: Any, *, profile: str = "read-only") -> MCPServer:
 
         @server.tool()
         async def fetch_updates(
-            days: int = 2,
+            days: Annotated[int, Field(ge=1, le=14)] = 2,
             feeds: list[Literal["arxiv", "hf_papers", "hf_models", "github"]] | None = None,
-            topics: list[str] | None = None,
-            limit: int = 30,
-        ) -> ObjectResponse:
+            topics: list[Annotated[str, Field(min_length=1, max_length=100)]] | None = None,
+            limit: Annotated[int, Field(ge=1, le=100)] = 30,
+        ) -> FetchResponse:
             """Run a bounded sync now. This contacts sources and writes new records locally."""
             return await response_for(
-                ObjectResponse,
+                FetchResponse,
                 lambda: service.fetch_updates(
                     FetchRequest(days=days, feeds=feeds, topics=topics, limit=limit)
                 ),

@@ -2,14 +2,24 @@
 
 ## 环境准备
 
-项目默认使用本机 Conda 的 `mujoco` Python。项目依赖由 uv 创建并锁定在仓库本地环境中。
+本工作区默认复用本机 Conda 的 `mujoco` Python；它只是本地选择，不是运行依赖。部署可使用任意受支持的 Python 3.11 或 3.12，由 `uv.lock` 重建依赖环境。
 
 ```bash
 mujoco_python="$(conda run -n mujoco python -c 'import sys; print(sys.executable)')"
-uv sync --python "$mujoco_python"
+uv sync --locked --python "$mujoco_python"
 uv run info-desk init
 uv run info-desk doctor
 ```
+
+无 Conda 的机器可使用系统 Python：
+
+```bash
+uv sync --locked --python 3.12
+uv run info-desk init
+uv run info-desk doctor
+```
+
+`doctor` 检查数据库迁移版本、SQLite 完整性和外键、数据目录与数据库权限、运行锁目录权限以及配置。若从项目根目录执行，也会报告 `uv.lock` 是否存在；独立安装的 wheel 没有项目锁文件时此项是提示，不影响运行。
 
 如果已有 `~/.information-desk/config.toml`，可以从仓库根目录的 `config.example.toml` 复制并调整。设置 `INFO_DESK_HOME` 后该路径优先于 TOML 的 `data.home`。相对的 `data.database` 路径相对于数据目录解析。
 
@@ -22,7 +32,7 @@ export HF_TOKEN="..."
 
 ## MCP 宿主
 
-先执行 `uv sync` 和 `info-desk init`。宿主启动命令使用项目环境中的入口路径，并设置数据目录：
+先执行 `uv sync --locked` 和 `info-desk init`。宿主启动命令使用项目环境中的入口路径，并设置数据目录：
 
 ```json
 {
@@ -60,9 +70,9 @@ uv run info-desk conflicts resolve 12 --winner 42
 先将项目安装到用户级入口。按本机 Conda Python 创建独立命令环境：
 
 ```bash
-mujoco_python="$(conda run -n mujoco python -c 'import sys; print(sys.executable)')"
-uv tool install --python "$mujoco_python" --editable .
+uv tool install --python 3.12 --editable .
 info-desk init
+command -v info-desk
 mkdir -p ~/.config/systemd/user
 cp deploy/information-desk.service ~/.config/systemd/user/
 cp deploy/information-desk.timer ~/.config/systemd/user/

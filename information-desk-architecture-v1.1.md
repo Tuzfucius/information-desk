@@ -439,7 +439,7 @@ for each normalized source record:
     B. target_item_ids = 不重复的强证据命中 Item 集合
        - 0 个：新建 Item + Source，默认 triage_status='inbox'
        - 1 个：Source 附加到该 Item
-       - >1 个：Source 独立建临时 Item；为冲突 Item 对生成 merge_conflicts
+       - >1 个：不创建第三个临时 Item。将待入库 Source 的规范化记录及候选 Item ID 持久化到待处理队列，并为冲突 Item 对生成 merge_conflicts；人工裁决后再挂接。
     C. 将 source_links 及来源快照在短事务中 upsert
     D. 对比“旧快照 -> 新快照”；生成去重的变更事件
     E. 若为已有 Source，任何跨 Item 改写必须走显式合并流程
@@ -910,7 +910,7 @@ backup_count = 3
 | A11 | 故障后恢复、备份恢复、schema 迁移与 `doctor` 执行正确 | P0 |
 | A12 | 老论文超出新发现日期窗后出现新官方代码，关注队列仍可捕获 | P0 |
 
-**上线前必须实测**：Python/SDK 版本、真实 arXiv/HF/GitHub API 样本、单机数据库并发、一次跨重启同步；表格列出的验收是目标，文档本身不构成测试结果。
+**验收状态**：本仓库已有离线、契约和有界 live 验收证据，逐项结果及边界见 [`docs/validation-results.md`](docs/validation-results.md)。目标 MCP 宿主互操作和更长时间的跨重启定时运行仍需部署方环境验证；表格本身不替代该记录。
 
 ---
 

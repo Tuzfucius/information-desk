@@ -25,9 +25,7 @@ def create_application(
         os.chmod(resolved.home, 0o700)
     database = Database(resolved.database_path(), readonly=readonly)
     repository = Repository(database)
-    if initialize:
-        repository.initialize()
-    elif readonly:
+    if initialize or readonly:
         repository.initialize()
 
     client = SafeHttpClient(

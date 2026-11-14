@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import re
 import asyncio
 import random
+import re
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 
 import httpx
@@ -72,9 +74,16 @@ class SourceAdapter(Protocol):
 class AdapterError(RuntimeError):
     """An expected source or input error with a stable application error code."""
 
-    def __init__(self, code: str, message: str):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retry_after_seconds: float | None = None,
+    ):
         super().__init__(message)
         self.code = code
+        self.retry_after_seconds = retry_after_seconds
 
 
 async def bounded_get(
@@ -106,29 +115,68 @@ async def bounded_get(
                     body.extend(chunk)
                 response = httpx.Response(
                     status_code=streamed.status_code,
-                    headers=streamed.headers,
+                    headers=_decoded_headers(streamed.headers),
                     content=bytes(body),
                     request=streamed.request,
                     extensions=streamed.extensions,
                 )
-            if response.status_code != 429 and response.status_code < 500:
+            retryable_403 = response.status_code == 403 and (
+                response.headers.get("Retry-After") is not None
+                or response.headers.get("X-RateLimit-Remaining") == "0"
+                or b"secondary rate limit" in response.content.lower()
+            )
+            retryable = (
+                response.status_code == 429
+                or response.status_code >= 500
+                or retryable_403
+            )
+            if not retryable:
                 return response
             if attempt == retries:
                 return response
-            retry_after = response.headers.get("Retry-After")
-            try:
-                delay = float(retry_after) if retry_after else 0.0
-            except ValueError:
-                delay = 0.0
-            if delay <= 0:
-                delay = min(8.0, 0.5 * (2**attempt)) * random.uniform(0.75, 1.25)
-            await asyncio.sleep(delay)
+            await _sleep(client, _retry_delay(response, attempt, client))
         except (httpx.TimeoutException, httpx.NetworkError):
             if attempt == retries:
                 raise
             delay = min(8.0, 0.5 * (2**attempt)) * random.uniform(0.75, 1.25)
-            await asyncio.sleep(delay)
+            await _sleep(client, delay)
     raise RuntimeError("unreachable retry state")
+
+
+def _decoded_headers(headers: httpx.Headers) -> httpx.Headers:
+    """Drop wire-body metadata after streamed bytes have been decoded."""
+    decoded = httpx.Headers(headers)
+    for name in ("content-encoding", "content-length", "transfer-encoding"):
+        if name in decoded:
+            del decoded[name]
+    return decoded
+
+
+async def _sleep(client: object, delay: float) -> None:
+    sleeper = getattr(client, "sleep", asyncio.sleep)
+    await sleeper(delay)
+
+
+def _retry_delay(response: httpx.Response, attempt: int, client: object) -> float:
+    retry_after = response.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return max(0.0, float(retry_after))
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=UTC)
+                return max(0.0, retry_at.timestamp() - getattr(client, "clock", time.time)())
+            except (TypeError, ValueError, OverflowError):
+                pass
+    reset = response.headers.get("X-RateLimit-Reset")
+    if reset:
+        try:
+            return max(0.0, float(reset) - getattr(client, "clock", time.time)())
+        except ValueError:
+            pass
+    return min(8.0, 0.5 * (2**attempt)) * random.uniform(0.75, 1.25)
 
 
 def utc_iso(value: Any) -> str | None:
@@ -141,7 +189,7 @@ def utc_iso(value: Any) -> str | None:
         if not text:
             return None
         try:
-            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(text)
         except ValueError:
             return None
     if parsed.tzinfo is None:

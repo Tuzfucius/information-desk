@@ -5,11 +5,24 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
 from info_desk.sources.base import CandidateSource
 from info_desk.storage.repository import Repository
+
+
+@dataclass(frozen=True, slots=True)
+class IngestResult:
+    item_id: int | None
+    source_id: int | None
+    source_created: bool = False
+    item_created: bool = False
+    event_count: int = 0
+    conflict_count: int = 0
+    pending_id: int | None = None
 
 
 class IdentityResolver:
@@ -28,7 +41,8 @@ class IdentityResolver:
         is_watched: bool = False,
         notes: str = "",
         last_checked_at: str | None = None,
-    ) -> tuple[int, int, bool, bool, int, int]:
+        forced_item_id: int | None = None,
+    ) -> IngestResult:
         candidate_data = candidate.to_dict()
         if last_checked_at is not None:
             candidate_data["last_checked_at"] = last_checked_at
@@ -50,8 +64,39 @@ class IdentityResolver:
             if same_paper:
                 item_ids.add(int(same_paper["item_id"]))
 
+        if existing is None and forced_item_id is None:
+            pending = self.repository.get_open_pending_source_for_identity(
+                candidate.source_type, candidate.source_uid, conn=conn
+            )
+            if pending is not None or len(item_ids) > 1:
+                evidence = {
+                    "candidate": candidate_data,
+                    "strong_links": strong_links,
+                    "matched_sources": matched,
+                }
+                pending_id, _ = self.repository.upsert_pending_source(
+                    candidate_data,
+                    evidence,
+                    sorted(item_ids),
+                    now=now,
+                    conn=conn,
+                )
+                return IngestResult(
+                    item_id=None,
+                    source_id=None,
+                    conflict_count=1,
+                    pending_id=pending_id,
+                )
+
+        if forced_item_id is not None and self.repository.get_item(
+            forced_item_id, conn=conn
+        ) is None:
+            raise ValueError("selected item no longer exists")
+
         if existing:
             item_id = int(existing["item_id"])
+        elif forced_item_id is not None:
+            item_id = forced_item_id
         elif len(item_ids) == 1:
             item_id = next(iter(item_ids))
         else:
@@ -68,7 +113,7 @@ class IdentityResolver:
                 conn=conn,
             )
 
-        item_created = existing is None and len(item_ids) != 1
+        item_created = existing is None and forced_item_id is None and not item_ids
         source_id, source_created = self.repository.upsert_source(
             item_id, candidate_data, now=now, conn=conn
         )
@@ -82,7 +127,16 @@ class IdentityResolver:
         fingerprint = self.content_fingerprint(candidate)
         if existing is None:
             event_type = "discovered" if item_created else "source_attached"
-            payload = {"title": candidate.title}
+            strongest = strong_links[0] if strong_links else {}
+            payload = (
+                {"title": candidate.title}
+                if event_type == "discovered"
+                else {
+                    "relation_type": strongest.get("relation_type", "related"),
+                    "evidence_level": strongest.get("evidence_level", "strong"),
+                    "operator_reviewed": forced_item_id is not None,
+                }
+            )
             key = self.event_key(event_type, candidate, fingerprint)
             _, created = self.repository.create_event(
                 item_id,
@@ -95,7 +149,7 @@ class IdentityResolver:
                 conn=conn,
             )
             event_count += int(created)
-            if same_paper_type and item_id and candidate.source_type in {"arxiv", "hf_paper"}:
+            if same_paper_type and candidate.source_type in {"arxiv", "hf_paper"}:
                 self.repository.set_source_links(
                     source_id,
                     [
@@ -128,7 +182,7 @@ class IdentityResolver:
                 )
                 event_count += int(created)
         for target_id in sorted(item_ids):
-            if target_id == item_id:
+            if forced_item_id is not None or target_id == item_id:
                 continue
             self.repository.add_merge_conflict(
                 target_id,
@@ -173,7 +227,42 @@ class IdentityResolver:
                 conn=conn,
             )
             event_count += int(created)
-        return item_id, source_id, source_created, item_created, event_count, conflict_count
+        return IngestResult(
+            item_id=item_id,
+            source_id=source_id,
+            source_created=source_created,
+            item_created=item_created,
+            event_count=event_count,
+            conflict_count=conflict_count,
+        )
+
+    def resolve_pending_source(
+        self,
+        pending_id: int,
+        item_id: int,
+        *,
+        now: str | None = None,
+    ) -> IngestResult:
+        timestamp = now or datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        with self.repository.transaction() as connection:
+            pending = self.repository.get_pending_source(pending_id, conn=connection)
+            if pending is None:
+                raise ValueError("pending source was not found or was already resolved")
+            if item_id not in {int(value) for value in pending["matched_item_ids"]}:
+                raise ValueError("selected item is not one of the recorded evidence matches")
+            candidate = CandidateSource(**pending["candidate"])
+            result = self.ingest_candidate(
+                candidate,
+                conn=connection,
+                now=timestamp,
+                run_id=None,
+                forced_item_id=item_id,
+            )
+            if result.item_id != item_id or not self.repository.mark_pending_source_resolved(
+                pending_id, item_id, now=timestamp, conn=connection
+            ):
+                raise ValueError("pending source could not be attached to the selected item")
+            return result
 
     @staticmethod
     def normalized_links(candidate: CandidateSource) -> list[dict[str, Any]]:
@@ -193,8 +282,14 @@ class IdentityResolver:
             elif parsed.hostname == "huggingface.co":
                 parts = [part for part in parsed.path.strip("/").split("/") if part]
                 if len(parts) == 2 and parts[0] == "papers":
-                    source_type = "hf_paper"
-                    external_id = parts[1]
+                    match = re.fullmatch(
+                        r"((?:\d{4}\.\d{4,5}|[a-z-]+/\d{7}))(?:v\d+)?",
+                        parts[1],
+                        re.IGNORECASE,
+                    )
+                    if match:
+                        source_type = "hf_paper"
+                        external_id = match.group(1).lower()
                 elif len(parts) == 2 and parts[0] not in {"datasets", "spaces"}:
                     source_type = "hf_model"
                     external_id = "/".join(parts)

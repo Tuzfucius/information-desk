@@ -7,7 +7,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError as PydanticValidationError
+from pydantic import BaseModel, Field, field_validator
+from pydantic import ValidationError as PydanticValidationError
 
 
 class Settings(BaseModel):
@@ -19,19 +20,34 @@ class Settings(BaseModel):
     topics: list[str] = Field(
         default_factory=lambda: ["Agent", "VLM", "VLA", "Diffusion Policy"]
     )
-    connect_timeout_sec: float = 5
-    read_timeout_sec: float = 20
-    max_response_bytes: int = 4_000_000
-    max_retries: int = 3
-    refresh_budget_sec: float = 30
-    scheduled_budget_sec: float = 900
-    initial_lookback_days: int = 2
-    overlap_hours: int = 48
-    max_pages_per_window: int = 20
-    watch_refresh_interval_hours: int = 24
-    watch_refresh_limit_per_run: int = 100
+    connect_timeout_sec: float = Field(default=5, gt=0, le=120)
+    read_timeout_sec: float = Field(default=20, gt=0, le=600)
+    max_response_bytes: int = Field(default=4_000_000, ge=1024, le=100_000_000)
+    max_retries: int = Field(default=3, ge=0, le=10)
+    refresh_budget_sec: float = Field(default=30, gt=0, le=3600)
+    scheduled_budget_sec: float = Field(default=900, gt=0, le=86400)
+    initial_lookback_days: int = Field(default=2, ge=1, le=14)
+    overlap_hours: int = Field(default=48, ge=0, le=720)
+    max_pages_per_window: int = Field(default=20, ge=1, le=500)
+    watch_refresh_interval_hours: int = Field(default=24, ge=1, le=8760)
+    watch_refresh_limit_per_run: int = Field(default=100, ge=1, le=10000)
     github_token: str | None = None
     hf_token: str | None = None
+
+    @field_validator("enabled_feeds")
+    @classmethod
+    def validate_feeds(cls, value: list[str]) -> list[str]:
+        allowed = {"arxiv", "hf_papers", "hf_models", "github"}
+        if not value or len(value) != len(set(value)) or set(value) - allowed:
+            raise ValueError("feeds must be unique supported feed names")
+        return value
+
+    @field_validator("topics")
+    @classmethod
+    def validate_topics(cls, value: list[str]) -> list[str]:
+        if not value or len(value) > 50 or any(not topic.strip() or len(topic) > 100 for topic in value):
+            raise ValueError("topics must contain 1 to 50 nonblank values of at most 100 characters")
+        return value
 
     def database_path(self) -> Path:
         if self.database is None:

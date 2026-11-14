@@ -5,17 +5,25 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sqlite3
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError as PydanticValidationError
+
 from info_desk.app import create_application
 from info_desk.config import load_settings
-from info_desk.contracts import EventsRequest, InspectRequest, SaveRequest, SearchRequest, StatusRequest
-from info_desk.contracts import FetchRequest
+from info_desk.contracts import (
+    EventsRequest,
+    FetchRequest,
+    InspectRequest,
+    SaveRequest,
+    SearchRequest,
+    StatusRequest,
+)
+from info_desk.exceptions import InfoDeskError
 from info_desk.server import serve
+from info_desk.storage.migrations import SCHEMA_VERSION
 
 
 def _json_default(value: Any) -> Any:
@@ -94,9 +102,13 @@ def _parser() -> argparse.ArgumentParser:
     conflicts = subparsers.add_parser("conflicts", help="Review source merge conflicts.")
     conflict_actions = conflicts.add_subparsers(dest="conflict_action", required=True)
     conflict_actions.add_parser("list", help="List unresolved conflicts.")
+    conflict_actions.add_parser("pending", help="List sources awaiting an item assignment.")
     resolve = conflict_actions.add_parser("resolve", help="Resolve a conflict into one item.")
     resolve.add_argument("conflict_id", type=int)
     resolve.add_argument("--winner", type=int, required=True)
+    attach = conflict_actions.add_parser("attach", help="Attach a reviewed pending source to an item.")
+    attach.add_argument("pending_id", type=int)
+    attach.add_argument("--item", type=int, required=True)
     dismiss = conflict_actions.add_parser("dismiss", help="Dismiss an incorrect match.")
     dismiss.add_argument("conflict_id", type=int)
     return parser
@@ -104,7 +116,21 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _parser().parse_args()
-    settings = load_settings(args.config)
+    try:
+        settings = load_settings(args.config)
+    except ValueError as error:
+        _print(
+            {
+                "ok": False,
+                "error": {
+                    "code": "INVALID_CONFIG",
+                    "message": str(error),
+                    "retryable": False,
+                    "details": {},
+                },
+            }
+        )
+        raise SystemExit(2) from error
 
     if args.command in {"init", "doctor", "sync"}:
         service, repository, client = create_application(
@@ -131,16 +157,40 @@ def main() -> None:
                 fts5 = connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='items_fts'"
                 ).fetchone() is not None
+                integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+                foreign_key_errors = len(connection.execute("PRAGMA foreign_key_check").fetchall())
+            home_mode = settings.home.stat().st_mode & 0o777
+            database_mode = settings.database_path().stat().st_mode & 0o777
+            run_dir = settings.home / "run"
+            lock_dir_ok = not run_dir.exists() or (run_dir.stat().st_mode & 0o077) == 0
+            lockfile = Path.cwd() / "uv.lock"
+            checks = {
+                "schema": {"ok": version == SCHEMA_VERSION, "version": version, "expected": SCHEMA_VERSION},
+                "integrity": {"ok": integrity == "ok", "result": integrity},
+                "foreign_keys": {"ok": foreign_key_errors == 0, "violations": foreign_key_errors},
+                "home_permissions": {"ok": home_mode & 0o077 == 0, "mode": oct(home_mode)},
+                "database_permissions": {"ok": database_mode & 0o077 == 0, "mode": oct(database_mode)},
+                "run_lock_directory": {"ok": lock_dir_ok, "present": run_dir.exists()},
+                "uv_lock": {"present": lockfile.is_file(), "path": lockfile if lockfile.is_file() else None},
+                "configuration": {"ok": True, "feeds": settings.enabled_feeds},
+            }
+            ok = all(
+                bool(check.get("ok", True))
+                for check in checks.values()
+            )
             _print(
                 {
-                    "ok": version == 1,
+                    "ok": ok,
                     "home": settings.home,
                     "database": settings.database_path(),
                     "schema_version": version,
                     "fts5": fts5,
                     "feeds": settings.enabled_feeds,
+                    "checks": checks,
                 }
             )
+            if not ok:
+                raise SystemExit(1)
             return
         if args.command == "serve":
             serve(service, profile=args.profile)
@@ -212,6 +262,28 @@ def main() -> None:
             if args.conflict_action == "list":
                 _print({"conflicts": repository.list_merge_conflicts()})
                 return
+            if args.conflict_action == "pending":
+                _print({"pending_sources": repository.list_pending_sources()})
+                return
+            if args.conflict_action == "attach":
+                try:
+                    result = service.resolver.resolve_pending_source(
+                        args.pending_id,
+                        args.item,
+                        now=_now(),
+                    )
+                except ValueError as error:
+                    raise SystemExit(str(error)) from error
+                _print(
+                    {
+                        "ok": True,
+                        "pending_source_id": args.pending_id,
+                        "item_id": result.item_id,
+                        "source_id": result.source_id,
+                        "action": "attached",
+                    }
+                )
+                return
             if args.conflict_action == "resolve":
                 try:
                     merged = repository.resolve_merge_conflict(
@@ -234,6 +306,33 @@ def main() -> None:
                 raise SystemExit(f"Open conflict {args.conflict_id} was not found.")
             _print({"ok": True, "action": "dismissed", "conflict_id": args.conflict_id})
             return
+    except PydanticValidationError:
+        _print(
+            {
+                "ok": False,
+                "error": {
+                    "code": "INVALID_ARGUMENT",
+                    "message": "Command arguments did not satisfy the request contract.",
+                    "retryable": False,
+                    "details": {},
+                },
+            }
+        )
+        raise SystemExit(2)
+    except InfoDeskError as error:
+        _print(
+            {
+                "ok": False,
+                "error": {
+                    "code": error.code,
+                    "message": error.message,
+                    "retryable": error.retryable,
+                    "retry_after_seconds": error.retry_after_seconds,
+                    "details": error.details,
+                },
+            }
+        )
+        raise SystemExit(2)
     finally:
         if client is not None:
             asyncio.run(client.aclose())

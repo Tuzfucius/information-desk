@@ -11,12 +11,6 @@ from typing import Any
 import httpx
 
 from info_desk.config import Settings
-from info_desk.exceptions import (
-    InfoDeskError,
-    NotFoundError,
-    RevisionConflictError,
-    UpstreamError,
-)
 from info_desk.contracts import (
     EventsRequest,
     FetchRequest,
@@ -127,20 +121,27 @@ class InformationService:
     def get_sync_status(self, request: StatusRequest) -> dict[str, Any]:
         feeds = request.feeds or self.settings.enabled_feeds
         states = self.repository.list_sync_states(feeds=feeds)
-        jobs = [
-            {
-                "job_key": state["job_key"],
-                "feed": state["feed"],
-                "query": state["query"],
-                "coverage_from": state["coverage_from"],
-                "completed_until": state["completed_until"],
-                "last_attempt_at": state["last_attempt_at"],
-                "last_success_at": state["last_success_at"],
-                "last_status": state["last_status"],
-                "last_error_code": state["last_error"] or None,
-            }
-            for state in states
-        ]
+        jobs = []
+        for state in states:
+            latest_run = self.repository.list_runs(job_key=state["job_key"], limit=1)
+            status = (
+                "running"
+                if latest_run and latest_run[0]["status"] == "running"
+                else state["last_status"]
+            )
+            jobs.append(
+                {
+                    "job_key": state["job_key"],
+                    "feed": state["feed"],
+                    "query": state["query"],
+                    "coverage_from": state["coverage_from"],
+                    "completed_until": state["completed_until"],
+                    "last_attempt_at": state["last_attempt_at"],
+                    "last_success_at": state["last_success_at"],
+                    "last_status": status,
+                    "last_error_code": state["last_error"] or None,
+                }
+            )
         represented = {state["feed"] for state in states}
         jobs.extend(
             {
@@ -257,7 +258,7 @@ class InformationService:
                 raise RevisionConflictError(item["item_id"], item["revision"])
 
         with self.repository.transaction() as connection:
-            item_id, _, _, item_created, _, _ = self.resolver.ingest_candidate(
+            ingested = self.resolver.ingest_candidate(
                 candidate,
                 conn=connection,
                 now=now,
@@ -267,12 +268,22 @@ class InformationService:
                 notes=request.notes or "",
                 run_id=None,
             )
-        item = self.repository.get_item(item_id)
+        if ingested.item_id is None:
+            pending = self.repository.get_pending_source(ingested.pending_id)
+            raise InfoDeskError(
+                "MERGE_CONFLICT",
+                "The source matched multiple existing items and needs review.",
+                details={
+                    "pending_source_id": ingested.pending_id,
+                    "candidate_item_ids": pending["matched_item_ids"] if pending else [],
+                },
+            )
+        item = self.repository.get_item(ingested.item_id)
         return {
-            "item_id": item_id,
+            "item_id": ingested.item_id,
             "revision": item["revision"],
             "triage_status": item["triage_status"],
-            "action": "created" if item_created else "updated",
+            "action": "created" if ingested.item_created else "updated",
         }
 
     async def fetch_updates(self, request: FetchRequest) -> dict[str, Any]:

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import sqlite3
 import os
+import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 
 class Database:
@@ -55,11 +55,17 @@ class Database:
         """Create a consistent backup, including committed WAL data."""
         target = Path(destination).expanduser()
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with self.read() as source:
-            backup = sqlite3.connect(target)
-            try:
-                source.backup(backup)
-            finally:
-                backup.close()
-            os.chmod(target, 0o600)
+        descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(descriptor)
+        try:
+            with self.read() as source:
+                backup = sqlite3.connect(target)
+                try:
+                    source.backup(backup)
+                finally:
+                    backup.close()
+                os.chmod(target, 0o600)
+        except BaseException:
+            target.unlink(missing_ok=True)
+            raise
         return target

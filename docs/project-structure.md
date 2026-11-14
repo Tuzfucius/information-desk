@@ -1,10 +1,10 @@
-# information-desk 项目结构与实施计划
+# information-desk 项目结构与测试说明
 
-> 状态为待实现。本文细化 [V1.1 架构基线](../information-desk-architecture-v1.1.md)的目录建议。工具输入、响应和行为以[智能体接口设计](mcp-interface.md)为实施契约。
+> 本文记录当前 V1.1 实施结构；验收证据见[测试与发布验收](validation-results.md)。工具输入、响应和行为以[智能体接口设计](mcp-interface.md)为实施契约。
 
 ## 1. 目录规划
 
-以下为目标布局。现有架构基线保留在根目录，按实施阶段新增其余文件。
+以下为当前布局。默认测试离线运行，真实源站请求单独放在 `live/`。
 
 ```text
 information-desk/
@@ -17,7 +17,9 @@ information-desk/
 ├── docs/
 │   ├── mcp-interface.md
 │   ├── project-structure.md
-│   └── operations.md
+│   ├── operations.md
+│   └── validation-results.md
+├── .github/workflows/ci.yml
 ├── src/info_desk/
 │   ├── __init__.py
 │   ├── app.py
@@ -46,24 +48,34 @@ information-desk/
 │       ├── repository.py
 │       ├── migrations.py
 │       └── sql/
-│           └── 001_initial.sql
+│           ├── 001_initial.sql
+│           └── 002_reliability.sql
 ├── tests/
-│   ├── fixtures/
-│   │   ├── arxiv/
-│   │   ├── hf_papers/
-│   │   ├── hf_models/
-│   │   └── github/
+│   ├── conftest.py
 │   ├── unit/
+│   │   ├── test_arxiv.py
+│   │   ├── test_config.py
 │   │   ├── test_contracts.py
-│   │   ├── test_resolver.py
-│   │   └── test_sources.py
+│   │   ├── test_github.py
+│   │   ├── test_hf_models.py
+│   │   ├── test_hf_papers.py
+│   │   ├── test_http_client.py
+│   │   ├── test_inspect.py
+│   │   └── test_resolver.py
 │   ├── integration/
-│   │   ├── test_storage.py
-│   │   ├── test_sync.py
+│   │   ├── test_concurrency.py
+│   │   ├── test_repository.py
+│   │   ├── test_service.py
+│   │   ├── test_storage_safety.py
+│   │   ├── test_sync_engine.py
 │   │   └── test_watch_refresh.py
-│   └── contract/
-│       ├── test_cli.py
-│       └── test_mcp_stdio.py
+│   ├── contract/
+│   │   ├── test_cli.py
+│   │   ├── test_cli_direct.py
+│   │   ├── test_mcp_stdio.py
+│   │   └── test_server_direct.py
+│   └── live/
+│       └── test_source_smoke.py
 └── deploy/
     ├── information-desk.service
     └── information-desk.timer
@@ -88,7 +100,7 @@ information-desk/
 | `http_client.py` | 负责域名和重定向策略、响应上限、超时、限流、有限重试和日志脱敏 |
 | `storage/sqlite.py` | 管理连接、事务及 SQLite 配置，提供只读连接和写事务入口 |
 | `storage/repository.py` | 维护查询、幂等 upsert、事件与运行记录、人工字段的条件更新 |
-| `storage/migrations.py` 与 `storage/sql/` | 管理 schema 版本、迁移和回滚。初始脚本以 V1.1 DDL 为基础，落实新增的持久化契约 |
+| `storage/migrations.py` 与 `storage/sql/` | 管理 schema 版本和事务迁移。v2 增加来源事件快照、待处理来源和冲突裁决目标 |
 | `deploy/`、`docs/operations.md` | 用户级定时同步和安装、宿主接入、诊断、备份恢复流程 |
 
 依赖方向为 `CLI/MCP → Service → 采集、归并、探查、Repository → 基础设施`。领域及公开契约在底层独立定义。适配器返回规范化对象给采集引擎，采集引擎通过 Repository 持久化。只有入口层和组装入口感知 CLI 或 MCP。
@@ -131,7 +143,9 @@ MCP 宿主启动配置使用已同步项目环境中 `info-desk` 的绝对路径
 | M3 · 多源及写入 | 四源适配器、关注刷新、探查、人工审核、手动刷新 | 同论文正确归并；迟到强证据进入冲突队列；旧论文补代码产生事件；并发写入与重试安全；修订冲突可恢复 |
 | M4 · 部署验收 | 定时器、备份恢复、真实源站冒烟、目标 MCP 宿主验证 | 通过 V1.1 第 14 章 P0 验收。用真实宿主走查查找、事件续读、收藏及部分刷新 |
 
-`tests/unit/` 验证参数边界、身份规则和各源解析。`tests/integration/` 使用临时 SQLite 和模拟 HTTP 验证事务、分页、进程并发与故障恢复。`tests/contract/` 启动真实 CLI 与 stdio 子进程，比较实际工具列表及结果 schema，并测试两种模式与错误反馈。默认测试离线运行，真实源站冒烟单独执行。
+`tests/unit/` 验证参数边界、身份规则和各源解析。`tests/integration/` 使用临时 SQLite 和模拟 HTTP 验证事务、分页、进程并发与故障恢复。`tests/contract/` 启动 CLI 与真实 stdio 子进程，比较工具列表及 schema，并测试两种模式与错误反馈。默认测试离线运行；`tests/live/` 每源最多请求一页，仅在显式设置 `INFO_DESK_LIVE=1` 后执行。
+
+GitHub Actions 在 Python 3.11/3.12 上运行 Ruff、锁文件检查、离线测试和 80% 行覆盖门槛，并单独构建/安装 wheel、检查迁移 SQL 打包和临时库诊断。真实源站冒烟只在手动或定时 workflow 中运行。
 
 ## 6. 与架构基线的实施差异
 
@@ -140,3 +154,4 @@ MCP 宿主启动配置使用已同步项目环境中 `info-desk` 的绝对路径
 - `search_items` 增加精确 Item ID 和来源发布日期过滤。公开对象使用 `item_id`，以便跨工具直接传递。
 - 原作业锁收紧为共享 feed 锁，防止同源的周期任务和手动刷新并行消耗配额。周期和手动任务仍独立记账。
 - 初始迁移在基线 SQL 上补充首次窗口、重扫分段、运行归属及事件快照的持久化字段。目录规划增加 `app.py`、`contracts.py` 和 `watch_refresh.py`，分别归置应用组装、公开契约和关注队列。
+- 多 Item 冲突的新来源进入 `pending_sources`，不创建临时 Item；CLI 明确选择目标后在单事务中挂接来源并记录裁决结果。
