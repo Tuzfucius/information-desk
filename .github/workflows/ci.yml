@@ -163,6 +163,8 @@ jobs:
           uv run --locked --python 3.12 info-desk doctor
           uv run --locked --python 3.12 info-desk status >/dev/null
           uv run --locked --python 3.12 pytest -p pytest_asyncio.plugin -q \
+            tests/unit/test_platform_utils.py \
+            tests/integration/test_storage_safety.py \
             tests/integration/test_cross_platform_lock.py \
             tests/contract/test_mcp_stdio.py \
             tests/contract/test_aihot_stdio_mock.py
