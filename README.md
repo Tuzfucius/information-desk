@@ -61,6 +61,25 @@ After initializing the database, configure the host with the absolute path to th
 
 `standard` is the default and permits source inspection, curation and network refresh as well as local search, events and status. Select `--profile read-only` to restrict the server to local queries. Inject tokens through the host's environment configuration when needed. Stdout is reserved for MCP protocol messages; diagnostics go to stderr or log files. The SDK stdio subprocess is tested; a specific end-user MCP host has not yet been verified.
 
+## Third-party Integrations
+
+### AIHOT
+
+information-desk optionally connects to [AIHOT](https://aihot.news/) through its official [remote MCP endpoint](https://aihot.news/agent?tab=mcp). The integration is disabled by default. When enabled, its 11 read-only tools are added only to the information-desk `standard` profile; `read-only` remains local-only. AIHOT's anonymous MCP access requires no API key, but it requires network access and depends on the upstream service being available. AIHOT results are not automatically written to the local SQLite database. Retain returned attribution and source links, and verify important facts at the original source.
+
+AIHOT is an independent third-party service. information-desk is not affiliated with or endorsed by the AIHOT project or its maintainers. The [AIHOT software repository](https://github.com/KKKKhazix/AIHOT) is published under MIT; that software license is separate from the hosted service and its [Public Usage Terms](https://aihot.news/terms). The terms permit personal non-commercial use, qualifying public-interest non-commercial use, and internal organizational use. External commercial products or services, customer delivery, resale, public mirrors, and providing AIHOT data or proxy access to third parties require prior written authorization. Third-party source content remains subject to its own rights.
+
+Configure AIHOT explicitly in the data directory's `config.toml`:
+
+```toml
+[aihot]
+enabled = true
+endpoint = "https://aihot.news/api/mcp"
+timeout_sec = 25
+```
+
+The endpoint is pinned to the official HTTPS URL. See [MCP interface](docs/mcp-interface.md) for tool names and [operations](docs/operations.md) for CLI examples.
+
 ## Development
 
 ```bash
@@ -85,7 +104,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 uv run --locked pytest -p pytest_asyncio.plugin
   -m "not live" --cov=info_desk --cov-report=term-missing --cov-fail-under=80
 ```
 
-An optional bounded public API check uses `INFO_DESK_LIVE=1 uv run --locked pytest -m live`; it requests one page per source and does not open a database. See [validation results](docs/validation-results.md).
+An optional bounded public API check uses `INFO_DESK_LIVE=1 uv run --locked pytest -m live`; the AIHOT smoke test discovers tools and makes one `aihot_get_hot_topics(limit=1)` call. Other live checks request one page per source and do not open a database. To run only AIHOT's live check, use `INFO_DESK_LIVE=1 uv run --locked pytest -m live -k aihot`. See [validation results](docs/validation-results.md).
 
 ## Deployment
 

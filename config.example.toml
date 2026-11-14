@@ -22,3 +22,8 @@ connect_timeout_sec = 5
 read_timeout_sec = 20
 max_response_bytes = 4000000
 max_retries = 3
+
+[aihot]
+enabled = false
+endpoint = "https://aihot.news/api/mcp"
+timeout_sec = 25

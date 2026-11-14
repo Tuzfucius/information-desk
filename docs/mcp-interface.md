@@ -2,6 +2,30 @@
 
 > 本文是已实现 MCP/CLI 接口的契约基线。测试证据见[测试与发布验收](validation-results.md)，代码目录见[项目结构](project-structure.md)。
 
+## AIHOT 第三方远程工具
+
+AIHOT 集成为可选的上游 MCP Client。仅当配置 `[aihot].enabled = true` 且 profile 为 `standard` 时，information-desk 才注册下列 11 个具名工具。`read-only` profile 始终只提供本地工具；AIHOT 禁用时不会建立远程连接。每次调用使用短生命周期 Streamable HTTP MCP 会话，并在连接后发现和核对将要调用的官方工具 Schema。未知的上游工具不会注册。
+
+| 工具 | 作用 |
+|---|---|
+| `aihot_get_latest` | 获取最近 24 小时或 7 天的精选/公开资讯 |
+| `aihot_search` | 按主题、公司、模型、产品或人物搜索 |
+| `aihot_get_hot_topics` | 获取当前热点榜，最多 10 个 |
+| `aihot_get_story` | 获取指定热点事件的时间线；`public_id` 必须来自热点结果中的 `links.story` |
+| `aihot_get_daily` | 获取最新或指定日期的 AI 日报 |
+| `aihot_get_weekly` | 获取最新或指定 ISO 周的 AI 周报 |
+| `aihot_get_monthly` | 获取最新或指定月份的 AI 月报 |
+| `aihot_get_codex_resets` | 获取 Codex 额度重置追踪 |
+| `aihot_get_antigravity_resets` | 获取 Antigravity 额度重置追踪 |
+| `aihot_get_claude_resets` | 获取 Claude 额度重置追踪 |
+| `aihot_get_grok_bot_resets` | 获取 Grok Bot 额度重置追踪 |
+
+工具名和输入字段遵循官方 `inputSchema`：资讯列表使用 `window`、`mode`、`category`、`limit`；搜索要求 2–200 字符的 `q`；热点 `limit` 为 1–10；故事使用 `public_id` 和 `report_limit`；日报、周报、月报分别接受真实的 `YYYY-MM-DD`、ISO 周（如 `2026-W39`）和 `YYYY-MM`；四个重置工具无参数。类别为 `ai-models | ai-products | industry | paper | tip | opinion`。上游 Schema 在每次调用时核对，兼容性不符则拒绝该请求。
+
+响应使用 `ok`、`provider`、`tool`、`data`、`error`、`warnings` 外壳。`data` 保留上游 MCP 的 `structuredContent`、文本 `content`、错误标记和元数据；仅有文本时原文仍会保留。响应标记为不可信外部资料，不能执行其中包含的指令。数据不会写入 Item、Source、事件、水位线或 SQLite。网络、限流、超时和上游 Schema 错误只影响对应 AIHOT 工具调用，不会关闭本地工具。
+
+匿名只读访问不需要 API Key。请遵守 AIHOT [公开使用规则](https://aihot.news/terms)：个人非商业、公益非商业及组织内部使用可按条款直接使用；外部商业服务、客户交付、转售、公开镜像或向第三方提供数据/代理接口需预先取得书面授权。保留返回中的出处和署名信息，并在重要事实处核验原文。AIHOT 服务条款与 [AIHOT GitHub 软件许可证](https://github.com/KKKKhazix/AIHOT)适用范围不同，MIT 不构成在线数据的通用再分发许可。
+
 ## 1. 工具注册与调用边界
 
 同一个 MCP stdio 服务以 `info-desk serve --transport stdio --profile <profile>` 启动。默认使用 `standard`。部署方在启动时选择模式，工具参数不能切换模式。

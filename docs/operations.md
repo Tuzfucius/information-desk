@@ -15,6 +15,19 @@ uv run --no-dev info-desk doctor
 
 可以将仓库根目录的 `config.example.toml` 复制为数据目录中的 `config.toml` 并调整。设置 `INFO_DESK_HOME` 后该路径优先于 TOML 的 `data.home`。相对的 `data.database` 路径相对于数据目录解析。
 
+### Optional AIHOT Remote MCP
+
+AIHOT is disabled by default. To use its remote information tools, add this section to the data directory's `config.toml`:
+
+```toml
+[aihot]
+enabled = true
+endpoint = "https://aihot.news/api/mcp"
+timeout_sec = 25
+```
+
+The endpoint is pinned to AIHOT's official HTTPS address and cannot be redirected to another MCP host through normal configuration. No API key is required. The `standard` MCP profile adds 11 AIHOT tools; `read-only` stays local-only. Disabled configuration creates no remote session, and responses are not written to SQLite. See the [MCP interface](mcp-interface.md#aihot-第三方远程工具) for tool details and [AIHOT disclosure](../README.md#aihot) for terms of use.
+
 凭证通过当前进程环境变量传入。公开资源无需凭证，配置 GitHub Token 可提高查询额度。日志不得写入 Token。
 
 ```bash
@@ -49,6 +62,9 @@ uv run --no-dev info-desk sync
 uv run --no-dev info-desk status
 uv run --no-dev info-desk search --keyword "Diffusion Policy"
 uv run --no-dev info-desk events --after-id 0 --limit 50
+uv run --no-dev info-desk aihot hot-topics --limit 5
+uv run --no-dev info-desk aihot latest --window 24h --limit 5
+uv run --no-dev info-desk aihot search "VLA" --limit 5
 uv run --no-dev info-desk inspect https://github.com/owner/repo
 uv run --no-dev info-desk backup ~/.information-desk/backups/intel-$(date -u +%Y%m%dT%H%M%SZ).db
 uv run --no-dev info-desk conflicts list
