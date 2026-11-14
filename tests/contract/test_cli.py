@@ -4,6 +4,11 @@ import json
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
+
+from info_desk import cli
+from info_desk.config import Settings
+from info_desk.integrations.aihot import AIHOTResponse
 
 
 def _run(home, *arguments):
@@ -56,3 +61,56 @@ def test_cli_invalid_search_is_structured_and_has_no_traceback(tmp_path) -> None
     payload = json.loads(result.stdout)
     assert payload["ok"] is False
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
+
+
+def test_aihot_cli_is_disabled_without_configuration_and_does_not_connect(tmp_path) -> None:
+    result = _run(tmp_path / "aihot-disabled", "aihot", "hot-topics")
+    assert result.returncode == 2
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "INTEGRATION_DISABLED"
+    assert "Traceback" not in result.stderr
+    assert not (tmp_path / "aihot-disabled").exists()
+
+
+def test_aihot_cli_uses_the_shared_client_and_prints_json(tmp_path, monkeypatch, capsys) -> None:
+    settings = Settings(
+        home=tmp_path,
+        aihot_enabled=True,
+        aihot_timeout_sec=18,
+    )
+    monkeypatch.setattr(cli, "load_settings", lambda _path: settings)
+
+    class LocalHTTPClient:
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(
+        cli,
+        "create_application",
+        lambda **_kwargs: (SimpleNamespace(), SimpleNamespace(), LocalHTTPClient()),
+    )
+    calls = []
+
+    class FakeAIHOTClient:
+        def __init__(self, *, endpoint, timeout_sec):
+            calls.append(("init", endpoint, timeout_sec))
+
+        async def call_tool(self, name, arguments):
+            calls.append(("call", name, arguments))
+            return AIHOTResponse(ok=True, tool=name, data={"content": [], "isError": False})
+
+    monkeypatch.setattr(cli, "AIHOTClient", FakeAIHOTClient)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["info-desk", "--config", str(tmp_path / "config.toml"), "aihot", "hot-topics", "--limit", "2"],
+    )
+    cli.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert calls == [
+        ("init", "https://aihot.news/api/mcp", 18),
+        ("call", "aihot_get_hot_topics", {"limit": 2}),
+    ]
