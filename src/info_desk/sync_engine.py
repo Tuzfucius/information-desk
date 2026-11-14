@@ -4,20 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import hashlib
 import json
 import logging
-import os
 import time
 from datetime import UTC, datetime, timedelta
-from typing import Any, Self
+from typing import Any
 
 import httpx
 
 from info_desk.config import Settings
 from info_desk.contracts import FetchRequest
 from info_desk.exceptions import InfoDeskError, ValidationError
+from info_desk.locking import LockConflictError, LockOperationError, acquire_file_lock
 from info_desk.resolver import IdentityResolver
 from info_desk.sources.base import AdapterError
 from info_desk.sources.registry import AdapterRegistry
@@ -78,12 +77,36 @@ class SyncEngine:
         try:
             for feed in sorted(lock_feeds):
                 lock_stack.enter_context(self._feed_lock(feed))
-        except BlockingIOError as error:
+        except LockConflictError as error:
             lock_stack.close()
             raise InfoDeskError(
                 "SYNC_ALREADY_RUNNING",
                 "A synchronization for one of the selected feeds is already running.",
                 retryable=True,
+            ) from error
+        except PermissionError as error:
+            lock_stack.close()
+            raise InfoDeskError(
+                "SYNC_LOCK_PERMISSION",
+                "Permission denied while opening a synchronization lock.",
+                retryable=False,
+                details={"error_type": type(error).__name__},
+            ) from error
+        except OSError as error:
+            lock_stack.close()
+            raise InfoDeskError(
+                "SYNC_LOCK_IO",
+                "Filesystem error while opening a synchronization lock.",
+                retryable=False,
+                details={"error_type": type(error).__name__},
+            ) from error
+        except LockOperationError as error:
+            lock_stack.close()
+            raise InfoDeskError(
+                "SYNC_LOCK_ERROR",
+                "The synchronization lock backend failed.",
+                retryable=False,
+                details={"error_type": type(error.__cause__).__name__ if error.__cause__ else type(error).__name__},
             ) from error
         budget = (
             self.settings.scheduled_budget_sec
@@ -675,16 +698,7 @@ class SyncEngine:
 
     def _feed_lock(self, feed: str):
         lock_path = self.settings.home / "run" / f"{feed}.lock"
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        os.chmod(lock_path.parent, 0o700)
-        handle = lock_path.open("a+")
-        os.chmod(lock_path, 0o600)
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BaseException:
-            handle.close()
-            raise
-        return _Lock(handle)
+        return acquire_file_lock(lock_path)
 
     def _queries_for_feed(self, feed: str, topics: list[str]) -> list[dict[str, Any]]:
         builder = self.registry.capabilities(feed).query_builder
@@ -748,14 +762,3 @@ class SyncEngine:
             separators=(",", ":"),
         )
         return hashlib.sha256(canonical.encode()).hexdigest()
-
-class _Lock:
-    def __init__(self, handle: Any) -> None:
-        self.handle = handle
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
-        self.handle.close()

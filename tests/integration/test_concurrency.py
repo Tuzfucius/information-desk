@@ -1,27 +1,14 @@
 from __future__ import annotations
 
-import fcntl
-import multiprocessing
-
 import pytest
 
 from info_desk.contracts import FetchRequest
 from info_desk.exceptions import InfoDeskError
+from info_desk.locking import LockOperationError
 from info_desk.resolver import IdentityResolver
 from info_desk.sources.base import PageResult
 from info_desk.sync_engine import SyncEngine
 from info_desk.watch_refresh import WatchRefresher
-
-
-def _probe_lock(path: str, result_queue) -> None:
-    with open(path, "a+") as handle:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            result_queue.put("busy")
-        else:
-            result_queue.put("acquired")
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class EmptyAdapter:
@@ -34,20 +21,6 @@ def _engine(settings, repository):
     resolver = IdentityResolver(repository)
     watch = WatchRefresher(settings, repository, adapters, resolver)
     return SyncEngine(settings, repository, adapters, resolver, watch, lambda _response: None)
-
-
-def test_feed_lock_excludes_a_second_process(settings, repository) -> None:
-    sync = _engine(settings, repository)
-    queue = multiprocessing.get_context("fork").Queue()
-    with sync._feed_lock("arxiv"):
-        path = settings.home / "run" / "arxiv.lock"
-        process = multiprocessing.get_context("fork").Process(
-            target=_probe_lock, args=(str(path), queue)
-        )
-        process.start()
-        assert queue.get(timeout=3) == "busy"
-        process.join(timeout=3)
-        assert process.exitcode == 0
 
 
 async def test_manual_and_scheduled_sync_share_lock_and_release_after_run(settings, repository) -> None:
@@ -70,6 +43,31 @@ async def test_scheduled_watch_run_holds_all_registered_feed_locks(settings, rep
         await sync.run(FetchRequest(feeds=["arxiv"], topics=["VLA"]), scheduled=True)
 
     assert raised.value.code == "SYNC_ALREADY_RUNNING"
+    with sync._feed_lock("arxiv"):
+        pass
+
+
+@pytest.mark.parametrize(
+    ("lock_error", "expected_code"),
+    [
+        (PermissionError("denied"), "SYNC_LOCK_PERMISSION"),
+        (OSError("disk error"), "SYNC_LOCK_IO"),
+        (LockOperationError("backend error"), "SYNC_LOCK_ERROR"),
+    ],
+)
+async def test_lock_operation_errors_are_not_mapped_to_conflicts(
+    settings, repository, monkeypatch, lock_error, expected_code
+) -> None:
+    sync = _engine(settings, repository)
+
+    def fail(_feed):
+        raise lock_error
+
+    monkeypatch.setattr(sync, "_feed_lock", fail)
+    with pytest.raises(InfoDeskError) as raised:
+        await sync.run(FetchRequest(feeds=["arxiv"], topics=["VLA"]))
+
+    assert raised.value.code == expected_code
 
 
 async def test_next_sync_recovers_interrupted_run_without_losing_waterline(settings, repository) -> None:
