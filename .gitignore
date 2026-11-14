@@ -17,3 +17,10 @@ logs/
 backups/
 .idea/
 .vscode/
+.cache/
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.log
+.wheel-venv/

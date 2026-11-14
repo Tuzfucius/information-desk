@@ -98,7 +98,7 @@ Watch 可使用 `watch_interval_hours` 与 `watch_timeout_seconds`，全局 `wat
 5. 扩展测试：只新增注册，不改 Resolver、Repository 或 MCP 工具；检查新类型事件快照和重启行为。
 6. live 测试单独标记，不写生产数据库、不作为普通 PR 必需项。
 
-第五来源的 Fake cursor 示例覆盖暂时 429 后跨运行恢复，也验证 `max_pages_per_window` 不被同一轮循环绕过。用 `pytest -m 'not live'` 执行离线套件；通过 Ruff、编译、迁移、轮子安装和 MCP stdio 契约后，再提交新来源。
+第五来源的 Fake cursor 示例覆盖暂时 429 后跨运行恢复，也验证 `max_pages_per_window` 不被同一轮循环绕过。用 `uv run pytest -m 'not live'` 执行离线套件；通过 Ruff、编译、迁移、轮子安装和 MCP stdio 契约后，再提交新来源。
 
 该 Fake 还在一轮完整完成后返回 provider checkpoint，随后增加一条记录并验证下一轮从已保存 cursor 开始；它不报告虚构的时间覆盖值。
 

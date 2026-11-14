@@ -16,9 +16,7 @@ temporary_home="$(mktemp -d)"
 temporary_units="$(mktemp -d)"
 trap 'rm -rf "$temporary_home" "$temporary_units"' EXIT
 chmod 700 "$temporary_home"
-sed "s|%h/.local/bin/info-desk|$info_desk_bin|g" \
-  "$repo_root/deploy/information-desk.service" \
-  >"$temporary_units/information-desk.service"
+"$repo_root/deploy/render-service.sh" "$info_desk_bin" >"$temporary_units/information-desk.service"
 cp "$repo_root/deploy/information-desk.timer" "$temporary_units/information-desk.timer"
 systemd-analyze verify \
   "$temporary_units/information-desk.service" \

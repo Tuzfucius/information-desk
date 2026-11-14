@@ -129,11 +129,11 @@ information-desk/
 
 ## 4. 本机开发与运行入口
 
-本机默认使用 Conda 的 `mujoco` Python。通过 `uv` 创建项目环境并锁定依赖。以下命令在项目骨架及入口实现后使用：
+使用 `uv` 创建独立项目环境并锁定依赖：
 
 ```bash
-mujoco_python="$(conda run -n mujoco python -c 'import sys; print(sys.executable)')"
-uv sync --locked --python "$mujoco_python"
+uv python install
+uv sync --locked
 uv run --locked pytest
 uv run --locked info-desk doctor
 uv run --locked info-desk serve --transport stdio --profile read-only
@@ -145,7 +145,7 @@ MCP 宿主启动配置使用已同步项目环境中 `info-desk` 的绝对路径
 
 | 阶段 | 实现范围 | 验收条件 |
 |---|---|---|
-| M0 · 可安装骨架 | 包、依赖锁、配置、迁移和 `doctor` | 在 `mujoco` 解释器上创建项目环境；安装后的 wheel 能找到迁移 SQL；临时库初始化通过 |
+| M0 · 可安装骨架 | 包、依赖锁、配置、迁移和 `doctor` | 创建独立项目环境；安装后的 wheel 能找到迁移 SQL；临时库初始化通过 |
 | M1 · 离线闭环 | Repository、身份归并、事件、查询与作业状态；用 arXiv fixture 驱动同步 | 重跑不重复建实体或事件；分页失败保留已提交页面，重启后完整重扫未完成区间；读接口稳定分页 |
 | M2 · 智能体查询 | 发布只读 MCP 工具与 CLI JSON 输出 | stdio 只注册三个只读工具；实际输入和输出符合 schema；可解释空结果与部分覆盖 |
 | M3 · 多源及写入 | 四源适配器、关注刷新、探查、人工审核、手动刷新 | 同论文正确归并；迟到强证据进入冲突队列；旧论文补代码产生事件；并发写入与重试安全；修订冲突可恢复 |

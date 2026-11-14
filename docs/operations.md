@@ -2,26 +2,18 @@
 
 ## 环境准备
 
-本工作区默认复用本机 Conda 的 `mujoco` Python；它只是本地选择，不是运行依赖。部署可使用任意受支持的 Python 3.11 或 3.12，由 `uv.lock` 重建依赖环境。
+安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)。项目最低要求 Python 3.11，CI 测试 3.11 和 3.12，默认版本为 3.12。Linux 是主要部署目标；Windows 尚未验证，程序使用 `fcntl` 锁。
 
 ```bash
-mujoco_python="$(conda run -n mujoco python -c 'import sys; print(sys.executable)')"
-uv sync --locked --python "$mujoco_python"
-uv run info-desk init
-uv run info-desk doctor
-```
-
-无 Conda 的机器可使用系统 Python：
-
-```bash
-uv sync --locked --python 3.12
-uv run info-desk init
-uv run info-desk doctor
+uv python install
+uv sync --locked --no-dev
+uv run --no-dev info-desk init
+uv run --no-dev info-desk doctor
 ```
 
 `doctor` 检查数据库迁移版本、SQLite 完整性和外键、数据目录与数据库权限、运行锁目录权限以及配置。若从项目根目录执行，也会报告 `uv.lock` 是否存在；独立安装的 wheel 没有项目锁文件时此项是提示，不影响运行。当前 schema 为 v3；v1/v2 数据库会在初始化时以增量事务迁移，不需要删除或重建用户数据库。
 
-如果已有 `~/.information-desk/config.toml`，可以从仓库根目录的 `config.example.toml` 复制并调整。设置 `INFO_DESK_HOME` 后该路径优先于 TOML 的 `data.home`。相对的 `data.database` 路径相对于数据目录解析。
+可以将仓库根目录的 `config.example.toml` 复制为数据目录中的 `config.toml` 并调整。设置 `INFO_DESK_HOME` 后该路径优先于 TOML 的 `data.home`。相对的 `data.database` 路径相对于数据目录解析。
 
 凭证通过当前进程环境变量传入。公开资源无需凭证，配置 GitHub Token 可提高查询额度。日志不得写入 Token。
 
@@ -32,7 +24,7 @@ export HF_TOKEN="..."
 
 ## MCP 宿主
 
-先执行 `uv sync --locked` 和 `info-desk init`。宿主启动命令使用项目环境中的入口路径，并设置数据目录：
+先同步环境并执行 `info-desk init` 创建或迁移数据库。宿主启动命令使用项目环境中的入口路径，并设置数据目录：
 
 ```json
 {
@@ -53,14 +45,14 @@ export HF_TOKEN="..."
 ## 手动运行
 
 ```bash
-uv run info-desk sync
-uv run info-desk status
-uv run info-desk search --keyword "Diffusion Policy"
-uv run info-desk events --after-id 0 --limit 50
-uv run info-desk inspect https://github.com/owner/repo
-uv run info-desk backup ~/.information-desk/backups/intel-$(date -u +%Y%m%dT%H%M%SZ).db
-uv run info-desk conflicts list
-uv run info-desk conflicts resolve 12 --winner 42
+uv run --no-dev info-desk sync
+uv run --no-dev info-desk status
+uv run --no-dev info-desk search --keyword "Diffusion Policy"
+uv run --no-dev info-desk events --after-id 0 --limit 50
+uv run --no-dev info-desk inspect https://github.com/owner/repo
+uv run --no-dev info-desk backup ~/.information-desk/backups/intel-$(date -u +%Y%m%dT%H%M%SZ).db
+uv run --no-dev info-desk conflicts list
+uv run --no-dev info-desk conflicts resolve 12 --winner 42
 ```
 
 搜索默认排除 `ignored`。按 Item ID 查询以及冲突处理由 MCP 工具或后续管理命令提供。同步按页写入来源和事件。只在数据区间完整枚举后推进水位线；服务器时间查询可以继续拆分，已确认完成的连续前缀会保留，稳定游标按适配器声明跨运行恢复，动态 offset 在失败后幂等重扫。
@@ -73,14 +65,14 @@ Watch 每轮最多处理 `watch_refresh_limit_per_run` 个到期 Source，每个
 
 ## systemd 用户定时任务
 
-先将项目安装到用户级入口。按本机 Conda Python 创建独立命令环境：
+从仓库安装独立工具，并使用实际入口生成用户级单元。渲染脚本接受绝对可执行路径；安装后可以离开仓库运行。以下启用步骤仅在确需部署时执行：
 
 ```bash
-uv tool install --python 3.12 --editable .
+uv tool install --python 3.12 .
 info-desk init
-command -v info-desk
+INFO_DESK_BIN="$(command -v info-desk)"
 mkdir -p ~/.config/systemd/user
-cp deploy/information-desk.service ~/.config/systemd/user/
+deploy/render-service.sh "$INFO_DESK_BIN" > ~/.config/systemd/user/information-desk.service
 cp deploy/information-desk.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now information-desk.timer
@@ -94,7 +86,7 @@ INFO_DESK_BIN="$(command -v info-desk)" deploy/validate-systemd.sh
 
 脚本优先通过可用的用户级 systemd manager 执行临时 `init`/`doctor`，只写入自动创建并清理的临时目录；它不启用实际用户 Timer，也不代表完成跨日运行观察。
 
-模板以 `%h/.local/bin/info-desk` 启动同步，每 6 小时运行一次，并在系统离线后补跑。检查记录：
+生成的服务以指定的独立入口启动同步，每 6 小时运行一次，并在系统离线后补跑。检查记录：
 
 ```bash
 systemctl --user status information-desk.timer
