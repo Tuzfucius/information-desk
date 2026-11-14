@@ -19,7 +19,7 @@
 | 有界 live 冒烟 | `INFO_DESK_LIVE=1 ... pytest -m live`：1 passed、146 deselected；对 arXiv、HF Papers、HF Models、GitHub 各进行一个只读请求，不打开数据库、不需要 Token |
 | systemd | `systemd-analyze verify` 检查 service/timer；用户级 manager 通过两个隔离 transient unit 实际运行 `init` 和 `doctor`。未启用用户 timer，也没有跨日运行观察 |
 | 指定 MCP 宿主 | 未验证：本轮没有配置目标宿主；SDK stdio 测试不能替代宿主联调 |
-| GitHub Actions | 提交推送后更新此行，记录实际 run 链接和结论；本地结果不冒充远程 CI |
+| GitHub Actions | [Push CI run 43572595908](https://github.com/Tuzfucius/information-desk/actions/runs/43572595908)：**success**；静态检查、Python 3.11/3.12 离线测试和 wheel 安装均通过。Live job 按配置仅由定时或手动触发，本次 push 未运行；本机有界 live 冒烟通过 |
 
 离线覆盖率执行命令：
 
