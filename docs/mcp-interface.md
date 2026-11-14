@@ -4,7 +4,7 @@
 
 ## AIHOT 第三方远程工具
 
-AIHOT 集成为可选的上游 MCP Client。仅当配置 `[aihot].enabled = true` 且 profile 为 `standard` 时，information-desk 才注册下列 11 个具名工具。`read-only` profile 始终只提供本地工具；AIHOT 禁用时不会建立远程连接。每次调用使用短生命周期 Streamable HTTP MCP 会话，并在连接后发现和核对将要调用的官方工具 Schema。未知的上游工具不会注册。
+AIHOT 上游 MCP Client 默认启用，且仅在 profile 为 `standard` 时注册下列 11 个具名工具。设置 `[aihot].enabled = false` 可禁用集成；`read-only` profile 始终只提供本地工具，AIHOT 禁用时不会建立远程连接。每次工具调用使用短生命周期 Streamable HTTP MCP 会话，并在连接后发现和核对将要调用的官方工具 Schema。未知的上游工具不会注册。
 
 | 工具 | 作用 |
 |---|---|

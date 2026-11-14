@@ -62,9 +62,9 @@ def test_missing_config_uses_default_and_invalid_settings_raise_value_error(tmp_
     assert Settings(home=tmp_path).database_path() == tmp_path / "intel.db"
 
 
-def test_aihot_is_disabled_by_default_and_can_only_use_the_official_endpoint(tmp_path) -> None:
+def test_aihot_is_enabled_by_default_and_can_only_use_the_official_endpoint(tmp_path) -> None:
     default = load_settings(tmp_path / "missing.toml")
-    assert default.aihot_enabled is False
+    assert default.aihot_enabled is True
     assert default.aihot_endpoint == "https://aihot.news/api/mcp"
     assert default.aihot_timeout_sec == 25
 
@@ -76,6 +76,11 @@ def test_aihot_is_disabled_by_default_and_can_only_use_the_official_endpoint(tmp
     enabled = load_settings(config)
     assert enabled.aihot_enabled is True
     assert enabled.aihot_timeout_sec == 30
+
+    disabled_config = tmp_path / "disabled.toml"
+    disabled_config.write_text('[aihot]\nenabled = false\n', encoding="utf-8")
+    disabled = load_settings(disabled_config)
+    assert disabled.aihot_enabled is False
 
     unsafe = tmp_path / "unsafe.toml"
     unsafe.write_text('[aihot]\nendpoint = "http://127.0.0.1:8080/mcp"\n', encoding="utf-8")

@@ -71,14 +71,17 @@ def test_cli_invalid_search_is_structured_and_has_no_traceback(tmp_path) -> None
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
 
 
-def test_aihot_cli_is_disabled_without_configuration_and_does_not_connect(tmp_path) -> None:
-    result = _run(tmp_path / "aihot-disabled", "aihot", "hot-topics")
+def test_aihot_cli_can_be_explicitly_disabled_and_does_not_connect(tmp_path) -> None:
+    home = tmp_path / "aihot-disabled"
+    home.mkdir()
+    (home / "config.toml").write_text("[aihot]\nenabled = false\n", encoding="utf-8")
+    result = _run(home, "aihot", "hot-topics")
     assert result.returncode == 2
     payload = json.loads(result.stdout)
     assert payload["ok"] is False
     assert payload["error"]["code"] == "INTEGRATION_DISABLED"
     assert "Traceback" not in result.stderr
-    assert not (tmp_path / "aihot-disabled").exists()
+    assert home.exists()
 
 
 def test_aihot_cli_uses_the_shared_client_and_prints_json(tmp_path, monkeypatch, capsys) -> None:

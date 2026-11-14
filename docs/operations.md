@@ -35,9 +35,9 @@ Windows MCP Host 的项目环境入口通常为 `C:/path/to/information-desk/.ve
 
 可以将仓库根目录的 `config.example.toml` 复制为数据目录中的 `config.toml` 并调整。设置 `INFO_DESK_HOME` 后该路径优先于 TOML 的 `data.home`。相对的 `data.database` 路径相对于数据目录解析。
 
-### Optional AIHOT Remote MCP
+### AIHOT Remote MCP
 
-AIHOT is disabled by default. To use its remote information tools, add this section to the data directory's `config.toml`:
+AIHOT is enabled by default. It needs network access only when an AIHOT tool is called. To customize the timeout, or to explicitly keep it enabled, use this section in the data directory's `config.toml`:
 
 ```toml
 [aihot]
@@ -46,7 +46,7 @@ endpoint = "https://aihot.news/api/mcp"
 timeout_sec = 25
 ```
 
-The endpoint is pinned to AIHOT's official HTTPS address and cannot be redirected to another MCP host through normal configuration. No API key is required. The `standard` MCP profile adds 11 AIHOT tools; `read-only` stays local-only. Disabled configuration creates no remote session, and responses are not written to SQLite. See the [MCP interface](mcp-interface.md#aihot-第三方远程工具) for tool details and [AIHOT disclosure](../README.md#aihot) for terms of use.
+The endpoint is pinned to AIHOT's official HTTPS address and cannot be redirected to another MCP host through normal configuration. No API key is required. The `standard` MCP profile adds 11 AIHOT tools; `read-only` stays local-only. Set `enabled = false` to disable AIHOT; disabled configuration creates no remote session. Responses are not written to SQLite. See the [MCP interface](mcp-interface.md#aihot-第三方远程工具) for tool details and [AIHOT disclosure](../README.md#aihot) for terms of use.
 
 凭证通过当前进程环境变量传入。公开资源无需凭证，配置 GitHub Token 可提高查询额度。日志不得写入 Token。
 

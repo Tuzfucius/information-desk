@@ -39,7 +39,7 @@ class Settings(BaseModel):
     sync_max_segments_per_run: int = Field(default=100, ge=1, le=10000)
     github_token: str | None = None
     hf_token: str | None = None
-    aihot_enabled: bool = False
+    aihot_enabled: bool = True
     aihot_endpoint: str = "https://aihot.news/api/mcp"
     aihot_timeout_sec: float = Field(default=25, gt=0, le=120)
 
@@ -117,7 +117,7 @@ def load_settings(config_path: Path | None = None) -> Settings:
         "sync_max_segments_per_run": sync.get("max_segments_per_run", 100),
         "github_token": os.environ.get("GITHUB_TOKEN"),
         "hf_token": os.environ.get("HF_TOKEN"),
-        "aihot_enabled": aihot.get("enabled", False),
+        "aihot_enabled": aihot.get("enabled", True),
         "aihot_endpoint": aihot.get("endpoint", "https://aihot.news/api/mcp"),
         "aihot_timeout_sec": aihot.get("timeout_sec", 25),
     }

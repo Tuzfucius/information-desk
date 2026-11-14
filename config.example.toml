@@ -24,6 +24,6 @@ max_response_bytes = 4000000
 max_retries = 3
 
 [aihot]
-enabled = false
+enabled = true
 endpoint = "https://aihot.news/api/mcp"
 timeout_sec = 25

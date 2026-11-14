@@ -7,6 +7,7 @@ import pytest
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 
+from info_desk.integrations.aihot import AIHOT_TOOL_NAMES
 from info_desk.storage.repository import Repository
 from info_desk.storage.sqlite import Database
 
@@ -130,7 +131,7 @@ async def test_stdio_standard_profile_has_typed_schemas_and_structured_business_
         "inspect_source",
         "save_item",
         "fetch_updates",
-    }
+    } | set(AIHOT_TOOL_NAMES)
     for name in ("inspect_source", "save_item", "fetch_updates"):
         schema = getattr(tools[name], "output_schema", None)
         assert schema is not None
