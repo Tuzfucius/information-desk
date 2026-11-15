@@ -1,5 +1,7 @@
 # information-desk
 
+[简体中文](README.zh-CN.md)
+
 ## Project Overview
 
 A local-first research and open-source intelligence service for AI agents. It collects records from arXiv, Hugging Face and GitHub, stores them in SQLite, and exposes query and curation tools over MCP.
